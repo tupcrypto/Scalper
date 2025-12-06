@@ -1,41 +1,63 @@
 import ccxt
 import scanner
 
-def get_scalp_signal(pair="BTC/USDT"):
+# =====================================================
+# SCALP SIGNAL GENERATOR (SIGNAL ONLY, NO ORDERS)
+# =====================================================
+
+def get_scalp_signal(pair: str = "BTC/USDT"):
+    """
+    Use scanner.detect_range to find a scalping range on BTC/USDT,
+    then decide LONG/SHORT scalp near the edges.
+    Returns dict with fields:
+        side, entry, tp, sl, low, high, price, atr, reason
+    or None if no good setup now.
+    """
     range_info = scanner.detect_range(pair)
     if not range_info:
-        return None
-
-    try:
-        exchange = ccxt.Exchange({'id': 'bingx'})
-        ticker = exchange.fetch_ticker(pair)
-        price = float(ticker["last"])
-    except Exception as e:
-        print("PRICE ERROR:", e)
+        print("NO RANGE INFO")
         return None
 
     low = range_info["low"]
     high = range_info["high"]
     atr = range_info["atr"]
 
+    try:
+        exchange = ccxt.bingx()
+        ticker = exchange.fetch_ticker(pair)
+        price = float(ticker["last"])
+    except Exception as e:
+        print("PRICE ERROR:", e)
+        return None
+
     width = high - low
+    if width <= 0:
+        print("BAD WIDTH")
+        return None
+
     lower_zone = low + width * 0.15
     upper_zone = high - width * 0.15
 
+    side = None
+    entry = price
+    tp = None
+    sl = None
+    reason = ""
+
     if price <= lower_zone:
         side = "LONG"
-        entry = price
-        tp = entry * 1.003
+        tp = entry * 1.003   # ~0.3% up
         sl = low - atr * 1.2
-        reason = "Bounce scalp from range support"
+        reason = "Price near range support (bounce scalp)."
+
     elif price >= upper_zone:
         side = "SHORT"
-        entry = price
-        tp = entry * 0.997
+        tp = entry * 0.997   # ~0.3% down
         sl = high + atr * 1.2
-        reason = "Fade scalp from range resistance"
+        reason = "Price near range resistance (fade scalp)."
+
     else:
-        # MID RANGE — do nothing
+        print("PRICE MID RANGE, NO EDGE")
         return None
 
     return {
