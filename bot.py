@@ -4,21 +4,21 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 import config
 
-# ==============================================================================================
+# =====================================================
 # GLOBAL STATE
-# ==============================================================================================
+# =====================================================
 
-AUTO_TRADING = False   # runtime switch
+AUTO_TRADING = False
 
 
-# ==============================================================================================
+# =====================================================
 # TELEGRAM COMMANDS
-# ==============================================================================================
+# =====================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AUTO_TRADING
     AUTO_TRADING = True
-    await update.message.reply_text(f"🤖 Auto Scalper Skeleton Started for {config.PAIR}")
+    await update.message.reply_text(f"🤖 Auto Scalper Started for {config.PAIR}")
 
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -40,20 +40,20 @@ async def resetgrid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Grid Reset — (not implemented yet)")
 
 
-# ==============================================================================================
-# MAIN LOOP — CURRENTLY IDLE (NO SCANNER YET)
-# ==============================================================================================
+# =====================================================
+# MAIN LOOP — CURRENTLY IDLE
+# =====================================================
 
 async def run_loop():
     global AUTO_TRADING
     while True:
-        # placeholder — doing nothing for now
+        # idle placeholder
         await asyncio.sleep(3)
 
 
-# ==============================================================================================
+# =====================================================
 # BOOTSTRAP TELEGRAM BOT
-# ==============================================================================================
+# =====================================================
 
 async def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
@@ -68,5 +68,12 @@ async def main():
     await app.run_polling()
 
 
+# =====================================================
+# FIX FOR RENDER — NEVER CLOSE LOOP
+# =====================================================
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
+
