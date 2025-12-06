@@ -1,8 +1,9 @@
 import ccxt
 import scanner
 
+
 # =====================================================
-# SCALP SIGNAL GENERATOR (SIGNAL ONLY, NO ORDERS)
+#  SCALP SIGNAL GENERATOR (SIGNAL ONLY)
 # =====================================================
 
 def get_scalp_signal(pair: str = "BTC/USDT"):
