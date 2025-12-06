@@ -3,45 +3,57 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 import config
-import scanner
-import grid_engine
-import notifier
 
-# === GLOBAL MEMORY ===
-AUTO_TRADING = False
-PAIR = config.PAIR
+# ==============================================================================================
+# GLOBAL STATE
+# ==============================================================================================
+
+AUTO_TRADING = False   # runtime switch
+
+
+# ==============================================================================================
+# TELEGRAM COMMANDS
+# ==============================================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AUTO_TRADING
     AUTO_TRADING = True
-    await update.message.reply_text(f"🤖 Auto Scalper Started for {PAIR}")
-    await notifier.send(f"🤖 Auto Scalper Started for {PAIR}")
+    await update.message.reply_text(f"🤖 Auto Scalper Skeleton Started for {config.PAIR}")
+
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AUTO_TRADING
     AUTO_TRADING = False
-    grid_engine.close_all_positions()
     await update.message.reply_text("🛑 Auto Scalper Stopped")
-    await notifier.send("🛑 Auto Scalper Stopped — All Positions Closed")
+
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = grid_engine.get_status()
+    msg = "📊 BOT STATUS\n"
+    msg += f"PAIR: {config.PAIR}\n"
+    msg += f"AUTO TRADING: {AUTO_TRADING}\n"
+    msg += f"LEVERAGE: {config.LEVERAGE}x\n"
+    msg += f"MAX CAPITAL USED: {config.MAX_CAPITAL_PCT}%\n"
     await update.message.reply_text(msg)
 
+
 async def resetgrid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    grid_engine.reset_grid()
-    await update.message.reply_text("♻️ Grid Re-centered")
-    await notifier.send("♻️ Grid Re-centered")
+    await update.message.reply_text("♻️ Grid Reset — (not implemented yet)")
+
+
+# ==============================================================================================
+# MAIN LOOP — CURRENTLY IDLE (NO SCANNER YET)
+# ==============================================================================================
 
 async def run_loop():
     global AUTO_TRADING
     while True:
-        if AUTO_TRADING:
-            # scan for a valid micro-range
-            grid_range = await scanner.detect_range(PAIR)
-            if grid_range:
-                await grid_engine.execute(PAIR, grid_range)
-        await asyncio.sleep(3)  # small cycle
+        # placeholder — doing nothing for now
+        await asyncio.sleep(3)
+
+
+# ==============================================================================================
+# BOOTSTRAP TELEGRAM BOT
+# ==============================================================================================
 
 async def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
@@ -54,6 +66,7 @@ async def main():
     asyncio.create_task(run_loop())
 
     await app.run_polling()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
