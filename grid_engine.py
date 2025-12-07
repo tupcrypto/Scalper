@@ -3,18 +3,18 @@ import scanner
 
 
 # =====================================================
-#  SCALP / GRID-STYLE SIGNAL GENERATOR
+#  AGGRESSIVE SCALP / GRID-STYLE SIGNAL GENERATOR
 # =====================================================
 
 def get_scalp_signal(pair: str = "BTC/USDT"):
     """
-    Use scanner.detect_range to find a scalping range on a pair,
-    then decide LONG/SHORT scalp near the edges.
-
-    Now more aggressive:
-      - 5m timeframe
-      - wider ATR band
-      - uses outer 30% as 'grid' zones (faster entries)
+    Aggressive version:
+      - Uses 5m ATR band from scanner
+      - Considers outer 45% of the band as 'edge zones'
+      - Much more likely to take trades
+    Still:
+      - Mean-reversion idea (buy lower band, short upper band)
+      - Uses SL beyond band, small TP
     """
     range_info = scanner.detect_range(pair)
     if not range_info:
@@ -38,9 +38,10 @@ def get_scalp_signal(pair: str = "BTC/USDT"):
         print(f"BAD WIDTH for {pair}")
         return None
 
-    # More aggressive zones: outer 30% instead of 15%
-    lower_zone = low + width * 0.3
-    upper_zone = high - width * 0.3
+    # Aggressive zones: outer 45% of band
+    # Inner 10% is "no-man's land", everything else is tradable
+    lower_zone = low + width * 0.45
+    upper_zone = high - width * 0.45
 
     side = None
     entry = price
@@ -48,21 +49,24 @@ def get_scalp_signal(pair: str = "BTC/USDT"):
     sl = None
     reason = ""
 
+    # LOWER HALF → LONG BIASED
     if price <= lower_zone:
         side = "LONG"
-        tp = entry * 1.0035   # ~0.35% up
-        sl = low - atr * 1.3
-        reason = "Price in lower grid zone (mean-reversion long)."
+        # Slightly bigger TP because band is narrower
+        tp = entry * 1.004   # ~0.4% up
+        sl = low - atr * 1.2
+        reason = "Aggressive long: price in lower band zone (mean reversion)."
 
+    # UPPER HALF → SHORT BIASED
     elif price >= upper_zone:
         side = "SHORT"
-        tp = entry * 0.9965   # ~0.35% down
-        sl = high + atr * 1.3
-        reason = "Price in upper grid zone (mean-reversion short)."
+        tp = entry * 0.996   # ~0.4% down
+        sl = high + atr * 1.2
+        reason = "Aggressive short: price in upper band zone (mean reversion)."
 
     else:
-        # mid-range, no edge
-        print(f"{pair} MID RANGE, NO EDGE")
+        # In a very narrow mid area; skip to avoid pointless chop
+        print(f"{pair} in mid band, skipping for now.")
         return None
 
     return {
