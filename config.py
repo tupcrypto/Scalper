@@ -4,12 +4,8 @@ import os
 #  TELEGRAM CONFIGURATION
 # =====================================================
 
-# Telegram bot token (from BotFather)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-
-# Numeric Telegram chat ID (MUST come from @userinfobot)
-# Example: 123456789
-TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "0"))  # numeric user ID
 
 
 # =====================================================
@@ -24,14 +20,15 @@ BINGX_API_SECRET = os.getenv("BINGX_API_SECRET", "")
 #  TRADING SETTINGS
 # =====================================================
 
-# Default pair to analyze / trade
-PAIR = os.getenv("PAIR", "BTC/USDT")
+# Comma-separated list of pairs to scan/trade, e.g. "BTC/USDT,SUI/USDT"
+PAIRS_STR = os.getenv("PAIRS", "BTC/USDT,SUI/USDT")
+PAIRS = [p.strip() for p in PAIRS_STR.split(",") if p.strip()]
 
-# Max leverage we allow in futures mode
-LEVERAGE = int(os.getenv("LEVERAGE", "2"))
+# For backward-compatibility: "main" pair (used e.g. in /status text)
+PAIR = PAIRS[0] if PAIRS else "BTC/USDT"
 
-# Maximum capital % used per trade (live mode only)
-MAX_CAPITAL_PCT = float(os.getenv("MAX_CAPITAL_PCT", "10"))  # keep small at start
+LEVERAGE = int(os.getenv("LEVERAGE", "2"))          # max leverage
+MAX_CAPITAL_PCT = float(os.getenv("MAX_CAPITAL_PCT", "5"))  # % of balance per trade
 
 
 # =====================================================
