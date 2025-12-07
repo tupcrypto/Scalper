@@ -1,83 +1,210 @@
-import ccxt
-import scanner
-
+import config
 
 # =====================================================
-#  AGGRESSIVE SCALP / GRID-STYLE SIGNAL GENERATOR
+#  GRID STATE
 # =====================================================
 
-def get_scalp_signal(pair: str = "BTC/USDT"):
+# Structure:
+# GRID_STATE = {
+#   "BTC/USDT": {
+#       "center": float,
+#       "low": float,
+#       "high": float,
+#       "gap": float,
+#       "amount": float,
+#       "levels": [
+#           {
+#               "price": float,
+#               "side": "LONG" or "SHORT",
+#               "tp": float,
+#               "open": bool,
+#           },
+#           ...
+#       ],
+#   },
+#   ...
+# }
+
+GRID_STATE = {}
+
+
+def init_grid(pair: str, center_price: float, balance_usdt: float):
     """
-    Aggressive version:
-      - Uses 5m ATR band from scanner
-      - Considers outer 45% of the band as 'edge zones'
-      - Much more likely to take trades
-    Still:
-      - Mean-reversion idea (buy lower band, short upper band)
-      - Uses SL beyond band, small TP
+    Initialize a fresh grid around center_price for this pair.
     """
-    range_info = scanner.detect_range(pair)
-    if not range_info:
-        print(f"NO RANGE INFO for {pair}")
-        return None
+    from bingx_api import calc_amount_per_level  # local import to avoid circular
 
-    low = range_info["low"]
-    high = range_info["high"]
-    atr = range_info["atr"]
+    amount = calc_amount_per_level(center_price, balance_usdt)
 
-    try:
-        exchange = ccxt.bingx()
-        ticker = exchange.fetch_ticker(pair)
-        price = float(ticker["last"])
-    except Exception as e:
-        print(f"PRICE ERROR for {pair}:", e)
-        return None
+    half_range = center_price * config.GRID_RANGE_PCT
+    low = center_price - half_range
+    high = center_price + half_range
+    gap = (high - low) / config.GRID_LEVELS
 
-    width = high - low
-    if width <= 0:
-        print(f"BAD WIDTH for {pair}")
-        return None
+    levels = []
 
-    # Aggressive zones: outer 45% of band
-    # Inner 10% is "no-man's land", everything else is tradable
-    lower_zone = low + width * 0.45
-    upper_zone = high - width * 0.45
+    for i in range(config.GRID_LEVELS):
+        level_price = low + i * gap
 
-    side = None
-    entry = price
-    tp = None
-    sl = None
-    reason = ""
+        # Below center => LONG grid. Above center => SHORT grid.
+        if level_price <= center_price:
+            side = "LONG"
+            tp = level_price + gap  # TP at next level up
+        else:
+            side = "SHORT"
+            tp = level_price - gap  # TP at next level down
 
-    # LOWER HALF → LONG BIASED
-    if price <= lower_zone:
-        side = "LONG"
-        # Slightly bigger TP because band is narrower
-        tp = entry * 1.004   # ~0.4% up
-        sl = low - atr * 1.2
-        reason = "Aggressive long: price in lower band zone (mean reversion)."
+        levels.append({
+            "price": level_price,
+            "side": side,
+            "tp": tp,
+            "open": False,
+        })
 
-    # UPPER HALF → SHORT BIASED
-    elif price >= upper_zone:
-        side = "SHORT"
-        tp = entry * 0.996   # ~0.4% down
-        sl = high + atr * 1.2
-        reason = "Aggressive short: price in upper band zone (mean reversion)."
-
-    else:
-        # In a very narrow mid area; skip to avoid pointless chop
-        print(f"{pair} in mid band, skipping for now.")
-        return None
-
-    return {
-        "pair": pair,
-        "side": side,
-        "entry": entry,
-        "tp": tp,
-        "sl": sl,
+    GRID_STATE[pair] = {
+        "center": center_price,
         "low": low,
         "high": high,
-        "price": price,
-        "atr": atr,
-        "reason": reason,
+        "gap": gap,
+        "amount": amount,
+        "levels": levels,
     }
+
+    print(f"GRID INIT for {pair}: center={center_price}, low={low}, high={high}, gap={gap}, amount={amount}")
+
+
+def step_pair(pair: str, price: float, balance_usdt: float):
+    """
+    One step of grid logic for a pair.
+
+    Returns a list of 'events', each event is dict:
+       { "action": "open" / "close" / "reset",
+         "pair": str,
+         "side": "LONG"/"SHORT",   # for open/close
+         "amount": float,
+         "level_price": float,
+         "tp": float,
+       }
+
+    The bot will then execute these events via bingx_api and send Telegram messages.
+    """
+    events = []
+
+    # If no balance or no price, do nothing.
+    if price <= 0 or balance_usdt <= 0:
+        return events
+
+    # Ensure grid exists
+    if pair not in GRID_STATE:
+        init_grid(pair, price, balance_usdt)
+        # No trades first tick, we just built grid
+        return events
+
+    state = GRID_STATE[pair]
+    low = state["low"]
+    high = state["high"]
+    gap = state["gap"]
+    amount = state["amount"]
+    levels = state["levels"]
+
+    # Safety: if amount is zero (no capital), re-init with latest balance
+    if amount <= 0:
+        init_grid(pair, price, balance_usdt)
+        state = GRID_STATE[pair]
+        low = state["low"]
+        high = state["high"]
+        gap = state["gap"]
+        amount = state["amount"]
+        levels = state["levels"]
+
+    # =========================
+    # 1) BREAKOUT CHECK
+    # =========================
+    breakout_buffer = gap  # 1 grid step
+    if price < low - breakout_buffer or price > high + breakout_buffer:
+        # We consider this a breakout. Close all open grid levels and reset.
+        for lvl in levels:
+            if lvl["open"]:
+                events.append({
+                    "action": "close",
+                    "pair": pair,
+                    "side": lvl["side"],
+                    "amount": amount,
+                    "level_price": lvl["price"],
+                    "tp": lvl["tp"],
+                })
+                lvl["open"] = False
+
+        # Reset grid around new center
+        init_grid(pair, price, balance_usdt)
+        events.append({
+            "action": "reset",
+            "pair": pair,
+            "side": "",
+            "amount": 0.0,
+            "level_price": price,
+            "tp": 0.0,
+        })
+        return events
+
+    # =========================
+    # 2) MANAGE EACH LEVEL
+    # =========================
+
+    for lvl in levels:
+        lvl_price = lvl["price"]
+        side = lvl["side"]
+        tp = lvl["tp"]
+        is_open = lvl["open"]
+
+        # OPEN LOGIC
+        if not is_open:
+            if side == "LONG" and price <= lvl_price:
+                # Open a long grid unit
+                events.append({
+                    "action": "open",
+                    "pair": pair,
+                    "side": side,
+                    "amount": amount,
+                    "level_price": lvl_price,
+                    "tp": tp,
+                })
+                lvl["open"] = True
+
+            elif side == "SHORT" and price >= lvl_price:
+                # Open a short grid unit
+                events.append({
+                    "action": "open",
+                    "pair": pair,
+                    "side": side,
+                    "amount": amount,
+                    "level_price": lvl_price,
+                    "tp": tp,
+                })
+                lvl["open"] = True
+
+        # CLOSE LOGIC
+        else:
+            if side == "LONG" and price >= tp:
+                events.append({
+                    "action": "close",
+                    "pair": pair,
+                    "side": side,
+                    "amount": amount,
+                    "level_price": lvl_price,
+                    "tp": tp,
+                })
+                lvl["open"] = False
+
+            elif side == "SHORT" and price <= tp:
+                events.append({
+                    "action": "close",
+                    "pair": pair,
+                    "side": side,
+                    "amount": amount,
+                    "level_price": lvl_price,
+                    "tp": tp,
+                })
+                lvl["open"] = False
+
+    return events
