@@ -8,22 +8,15 @@ import config
 import grid_engine
 import bingx_api
 
-# =====================================================
-# GLOBAL STATE
-# =====================================================
-
-AUTO_TRADING = False  # controls auto loop
-TELEGRAM_CHAT_ID = config.TELEGRAM_CHAT_ID  # numeric
+AUTO_TRADING = False
+TELEGRAM_CHAT_ID = config.TELEGRAM_CHAT_ID
 
 
 # =====================================================
-# SIMPLE NOTIFIER
+# NOTIFIER
 # =====================================================
 
 async def notify(app, text: str):
-    """
-    Send a Telegram message without requiring a Command handler.
-    """
     if TELEGRAM_CHAT_ID == 0:
         print("TELEGRAM_CHAT_ID is 0, cannot notify.")
         return
@@ -34,14 +27,15 @@ async def notify(app, text: str):
 
 
 # =====================================================
-# TELEGRAM COMMANDS
+# COMMANDS
 # =====================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AUTO_TRADING
     AUTO_TRADING = True
     await update.message.reply_text(
-        f"🤖 Auto Scalper AUTO MODE ON for {config.PAIR}\n"
+        f"🤖 Auto Scalper AUTO MODE ON\n"
+        f"Pairs: {', '.join(config.PAIRS)}\n"
         f"Scan interval: 2 min\n"
         f"Live trading: {'ON' if config.LIVE_TRADING else 'OFF'}"
     )
@@ -55,7 +49,7 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "📊 BOT STATUS\n"
-    msg += f"PAIR: {config.PAIR}\n"
+    msg += f"Pairs: {', '.join(config.PAIRS)}\n"
     msg += f"AUTO MODE: {AUTO_TRADING}\n"
     msg += f"SCAN INTERVAL: 2 min\n"
     msg += f"MODE: {'LIVE' if config.LIVE_TRADING else 'SIGNAL-ONLY'}\n"
@@ -65,31 +59,31 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def resetgrid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("♻ Grid reset is implicit — bot recalculates range each scan.")
+    await update.message.reply_text("♻ Grid is recalculated every scan (no static grid to reset).")
 
-
-# ============ MANUAL SCAN ============
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔎 Manual scan: Checking market...")
+    await update.message.reply_text("🔎 Manual scan on all pairs...")
 
-    try:
-        signal = await asyncio.to_thread(grid_engine.get_scalp_signal, config.PAIR)
-    except Exception as e:
-        await update.message.reply_text(f"❌ SCAN ERROR: {e}")
-        return
+    texts = []
+    for pair in config.PAIRS:
+        try:
+            signal = await asyncio.to_thread(grid_engine.get_scalp_signal, pair)
+        except Exception as e:
+            texts.append(f"{pair}: ❌ SCAN ERROR: {e}")
+            continue
 
-    if not signal:
-        await update.message.reply_text("😐 No good scalp setup right now.")
-        return
+        if not signal:
+            texts.append(f"{pair}: 😐 No scalp setup now.")
+        else:
+            formatted = format_signal(signal)
+            texts.append(formatted)
 
-    text = format_signal(signal)
-    await update.message.reply_text(text)
+            if config.LIVE_TRADING:
+                trade_result = await asyncio.to_thread(bingx_api.execute_trade_from_signal, signal)
+                texts.append(trade_result["message"])
 
-    if config.LIVE_TRADING:
-        await update.message.reply_text("🚀 LIVE_TRADING=ON — attempting trade...")
-        trade_result = await asyncio.to_thread(bingx_api.execute_trade_from_signal, signal)
-        await update.message.reply_text(trade_result["message"])
+    await update.message.reply_text("\n\n".join(texts))
 
 
 # =====================================================
@@ -97,6 +91,7 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====================================================
 
 def format_signal(signal: dict) -> str:
+    pair = signal["pair"]
     side = signal["side"]
     entry = signal["entry"]
     tp = signal["tp"]
@@ -108,14 +103,14 @@ def format_signal(signal: dict) -> str:
     price = signal["price"]
 
     return (
-        f"🎯 SCALP SIGNAL ({config.PAIR})\n"
+        f"🎯 SCALP SIGNAL ({pair})\n"
         f"Side: {side}\n"
         f"Current Price: {price:.4f}\n"
         f"Entry: {entry:.4f}\n"
         f"TP: {tp:.4f}\n"
-        f"SL: {sl:.4f}\n\n"
+        f"SL: {sl:.4f}\n"
         f"Range: {low:.4f} — {high:.4f}\n"
-        f"ATR (15m): {atr:.4f}\n\n"
+        f"ATR (5m): {atr:.4f}\n"
         f"Reason: {reason}\n"
         f"Mode: {'LIVE (orders sent)' if config.LIVE_TRADING else 'SIGNAL ONLY'}"
     )
@@ -127,26 +122,25 @@ def format_signal(signal: dict) -> str:
 
 async def auto_loop(app):
     global AUTO_TRADING
-
     while True:
         if AUTO_TRADING:
-            try:
-                signal = await asyncio.to_thread(grid_engine.get_scalp_signal, config.PAIR)
-            except Exception as e:
-                print("AUTO LOOP SCAN ERROR:", e)
-                await notify(app, f"❌ AUTO SCAN ERROR: {e}")
-                await asyncio.sleep(120)
-                continue
+            for pair in config.PAIRS:
+                try:
+                    signal = await asyncio.to_thread(grid_engine.get_scalp_signal, pair)
+                except Exception as e:
+                    print(f"AUTO SCAN ERROR for {pair}:", e)
+                    await notify(app, f"{pair}: ❌ AUTO SCAN ERROR: {e}")
+                    continue
 
-            if signal:
-                text = format_signal(signal)
-                await notify(app, text)
+                if signal:
+                    formatted = format_signal(signal)
+                    await notify(app, formatted)
 
-                if config.LIVE_TRADING:
-                    trade_result = await asyncio.to_thread(
-                        bingx_api.execute_trade_from_signal, signal
-                    )
-                    await notify(app, trade_result["message"])
+                    if config.LIVE_TRADING:
+                        trade_result = await asyncio.to_thread(
+                            bingx_api.execute_trade_from_signal, signal
+                        )
+                        await notify(app, trade_result["message"])
 
         await asyncio.sleep(120)  # 2 minutes
 
@@ -164,7 +158,6 @@ def main():
     app.add_handler(CommandHandler("resetgrid", resetgrid))
     app.add_handler(CommandHandler("scan", scan))
 
-    # start auto-loop coroutine
     asyncio.get_event_loop().create_task(auto_loop(app))
 
     print("BOT STARTED AND POLLING...")
