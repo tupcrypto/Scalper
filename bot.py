@@ -34,11 +34,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AUTO_TRADING
     AUTO_TRADING = True
     await update.message.reply_text(
-        f"🤖 Grid Auto Mode ON\n"
+        f"🤖 GRID AUTO MODE ON\n"
         f"Pairs: {', '.join(config.PAIRS)}\n"
         f"Grid levels: {config.GRID_LEVELS}\n"
         f"Grid range: ±{config.GRID_RANGE_PCT * 100:.2f}% around center\n"
-        f"Max capital per pair: {config.MAX_CAPITAL_PCT}%\n"
+        f"Max capital: {config.MAX_CAPITAL_PCT}%\n"
         f"Live trading: {'ON' if config.LIVE_TRADING else 'OFF'}"
     )
 
@@ -46,15 +46,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AUTO_TRADING
     AUTO_TRADING = False
-    await update.message.reply_text("🛑 Auto grid mode OFF — no more auto scans/trades.")
+    await update.message.reply_text("🛑 Auto grid mode OFF — no more trades.")
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mode = "LIVE (orders sent)" if config.LIVE_TRADING else "SIGNAL-ONLY"
+    mode = "LIVE (orders placed)" if config.LIVE_TRADING else "SIGNAL ONLY"
     msg = (
-        "📊 BOT STATUS\n"
+        "📊 GRID STATUS\n"
         f"Pairs: {', '.join(config.PAIRS)}\n"
-        f"AUTO MODE: {AUTO_TRADING}\n"
+        f"AUTO TRADING: {AUTO_TRADING}\n"
         f"Mode: {mode}\n"
         f"Leverage: {config.LEVERAGE}x\n"
         f"Max capital per pair: {config.MAX_CAPITAL_PCT}%\n"
@@ -64,19 +64,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
-async def resetgrid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Simple explanation only; actual reset happens automatically on breakout.
-    await update.message.reply_text(
-        "♻ Grid is automatically re-centered on breakout.\n"
-        "If you want to force a reset, send /stop then /start."
-    )
-
-
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Manual one-step of grid logic (for debugging).
+    Manual one-step grid operation
     """
-    await update.message.reply_text("🔎 Manual grid step on all pairs...")
+    await update.message.reply_text("🔎 Manual grid scan running...")
 
     app = context.application
     exchange = bingx_api.get_exchange()
@@ -89,20 +81,20 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         events = grid_engine.step_pair(pair, price, balance)
 
         if not events:
-            texts.append(f"{pair}: No grid actions this step (price={price}).")
+            texts.append(f"{pair}: No grid actions.")
         else:
             for ev in events:
                 if ev["action"] == "reset":
-                    texts.append(f"{pair}: 🔄 Grid reset around price {ev['level_price']:.4f}")
+                    texts.append(f"{pair}: 🔄 GRID RESET at {ev['level_price']:.4f}")
                 elif ev["action"] == "open":
-                    msg = f"{pair}: 🟢 OPEN {ev['side']} @ level {ev['level_price']:.4f}, TP={ev['tp']:.4f}"
-                    texts.append(msg)
+                    text = f"{pair}: 🟢 OPEN {ev['side']} @ {ev['level_price']:.4f}, TP={ev['tp']:.4f}"
+                    texts.append(text)
                     if config.LIVE_TRADING:
                         res = bingx_api.open_position(exchange, pair, ev["side"], ev["amount"])
                         texts.append(res)
                 elif ev["action"] == "close":
-                    msg = f"{pair}: 🔴 CLOSE {ev['side']} from level {ev['level_price']:.4f}, TP={ev['tp']:.4f}"
-                    texts.append(msg)
+                    text = f"{pair}: 🔴 CLOSE {ev['side']} from {ev['level_price']:.4f}, TP={ev['tp']:.4f}"
+                    texts.append(text)
                     if config.LIVE_TRADING:
                         res = bingx_api.close_position(exchange, pair, ev["side"], ev["amount"])
                         texts.append(res)
@@ -111,7 +103,7 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================================================
-# AUTO LOOP
+# AUTO LOOP  (GRID MODE)
 # =====================================================
 
 async def auto_loop(app):
@@ -128,29 +120,28 @@ async def auto_loop(app):
 
                     for ev in events:
                         if ev["action"] == "reset":
-                            await notify(app, f"{pair}: 🔄 Grid reset around {ev['level_price']:.4f}")
+                            await notify(app, f"{pair}: 🔄 GRID RESET at {ev['level_price']:.4f}")
                         elif ev["action"] == "open":
-                            txt = f"{pair}: 🟢 OPEN {ev['side']} @ {ev['level_price']:.4f}, TP={ev['tp']:.4f}"
-                            await notify(app, txt)
+                            msg = f"{pair}: 🟢 OPEN {ev['side']} @ {ev['level_price']:.4f}, TP={ev['tp']:.4f}"
+                            await notify(app, msg)
                             if config.LIVE_TRADING:
                                 res = bingx_api.open_position(exchange, pair, ev["side"], ev["amount"])
                                 await notify(app, res)
                         elif ev["action"] == "close":
-                            txt = f"{pair}: 🔴 CLOSE {ev['side']} from {ev['level_price']:.4f}, TP={ev['tp']:.4f}"
-                            await notify(app, txt)
+                            msg = f"{pair}: 🔴 CLOSE {ev['side']} from {ev['level_price']:.4f}, TP={ev['tp']:.4f}"
+                            await notify(app, msg)
                             if config.LIVE_TRADING:
                                 res = bingx_api.close_position(exchange, pair, ev["side"], ev["amount"])
                                 await notify(app, res)
 
             except Exception as e:
-                print("AUTO LOOP ERROR:", e)
                 await notify(app, f"❌ AUTO LOOP ERROR: {e}")
 
-        await asyncio.sleep(30)  # faster loop for grid
+        await asyncio.sleep(30)  # faster loop
 
 
 # =====================================================
-# MAIN
+# START APP
 # =====================================================
 
 def main():
@@ -158,11 +149,9 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("resetgrid", resetgrid))
     app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("status", status))
 
-    # start auto loop
     asyncio.get_event_loop().create_task(auto_loop(app))
 
     print("BOT STARTED AND POLLING...")
