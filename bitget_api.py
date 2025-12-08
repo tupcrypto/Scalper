@@ -2,14 +2,13 @@ import ccxt
 import config
 import json
 
-
 def get_exchange():
     return ccxt.bitget({
-        "apiKey": config.BITGET_API_KEY,
-        "secret": config.BITGET_API_SECRET,
-        "password": config.BITGET_API_PASSWORD,
+        "apiKey":    config.BITGET_API_KEY,
+        "secret":    config.BITGET_API_SECRET,
+        "password":  config.BITGET_API_PASSWORD,
         "options": {
-            "defaultType": "swap",     # futures mode
+            "defaultType": "swap",   # USDT-M futures
         }
     })
 
@@ -17,27 +16,34 @@ def get_exchange():
 def get_futures_balance():
     try:
         exchange = get_exchange()
-
-        # MUST load markets before private endpoints
         exchange.load_markets()
 
-        # Bitget REAL endpoint for unified futures margin
-        raw = exchange.privateMixGetAccountAccounts()
-        # raw is dict like:
-        # { "code": "00000", "msg": "success", "data": [ {...} ] }
+        # REAL working endpoint for USDT-M futures balance
+        #
+        # RETURN FORMAT:
+        # {
+        #   "code": "00000",
+        #   "msg": "success",
+        #   "data": [
+        #       { "marginCoin": "USDT", "available": "52.105", ... }
+        #   ]
+        # }
+        #
+        raw = exchange.privateMixGetAccountBalance()
 
         if raw.get("code") != "00000":
             return f"RAW BALANCE ERROR: {json.dumps(raw)}"
 
-        data = raw.get("data", [])
-        if not data:
+        balances = raw.get("data", [])
+        if not balances:
             return 0
 
-        # unified margin account returns balance under 'usdtEquity'
-        acct = data[0]
-        balance = float(acct.get("usdtEquity", 0))
+        # pick USDT futures wallet
+        for b in balances:
+            if b.get("marginCoin") == "USDT":
+                return float(b.get("available", 0))
 
-        return balance
+        return 0
 
     except Exception as e:
         return f"RAW BALANCE ERROR: {str(e)}"
@@ -47,4 +53,3 @@ def get_price(symbol):
     exchange = get_exchange()
     ticker = exchange.fetch_ticker(symbol)
     return ticker["last"]
-
