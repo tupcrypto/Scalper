@@ -1,73 +1,94 @@
-# ============================
-# grid_engine.py  (FULL FILE)
-# ============================
-
+import ccxt
 import config
+import math
 
-def check_grid_signal(price: float, balance: float):
-    """
-    Simple grid logic:
-    - Use MAX_CAPITAL_PCT of futures balance
-    - Split into GRID_LEVELS
-    - If price < lower band -> BUY
-    - If price > upper band -> SELL
-    - Else HOLD
-    Returns dict with action, amount (position size), reason.
-    """
 
-    price = float(price)
-    balance = float(balance)
-
-    if price <= 0:
-        return {
-            "action": "HOLD",
-            "amount": 0.0,
-            "reason": "Invalid price"
+# ======================================================
+# GET EXCHANGE INSTANCE
+# ======================================================
+def get_exchange():
+    exchange = ccxt.bitget({
+        "apiKey": config.BITGET_API_KEY,
+        "secret": config.BITGET_API_SECRET,
+        "password": config.BITGET_PASSPHRASE,   # BITGET NEEDS THIS
+        "enableRateLimit": True,
+        "options": {
+            "defaultType": "swap",              # ensures futures mode
         }
+    })
+    return exchange
 
-    if balance <= 0:
-        return {
-            "action": "HOLD",
-            "amount": 0.0,
-            "reason": "No futures balance"
-        }
 
-    total_alloc = balance * (config.MAX_CAPITAL_PCT / 100.0)
-    if total_alloc <= 0:
-        return {
-            "action": "HOLD",
-            "amount": 0.0,
-            "reason": "No capital allocation"
-        }
+# ======================================================
+# GET BALANCE — USDT futures wallet
+# ======================================================
+async def get_balance(exchange):
+    try:
+        balance = await exchange.fetch_balance()
+        # futures balance extraction
+        if "USDT" in balance:
+            return float(balance["USDT"]["total"])
 
-    # capital per grid step in USDT
-    grid_capital = total_alloc / float(config.GRID_LEVELS)
+        if "future" in balance and "USDT" in balance["future"]:
+            return float(balance["future"]["USDT"]["total"])
 
-    # convert capital to contracts/coins
-    qty_per_step = grid_capital / price
+        return 0.0
 
-    upper_band = price * (1.0 + config.GRID_RANGE_PCT)
-    lower_band = price * (1.0 - config.GRID_RANGE_PCT)
+    except Exception:
+        return 0.0
 
-    # BUY if below lower band
-    if price < lower_band:
-        return {
-            "action": "BUY",
-            "amount": float(qty_per_step),
-            "reason": f"Price {price:.4f} < lower band {lower_band:.4f}"
-        }
 
-    # SELL if above upper band
-    if price > upper_band:
-        return {
-            "action": "SELL",
-            "amount": float(qty_per_step),
-            "reason": f"Price {price:.4f} > upper band {upper_band:.4f}"
-        }
+# ======================================================
+# PRICE FETCH
+# ======================================================
+async def get_price(exchange, pair):
+    try:
+        ticker = await exchange.fetch_ticker(pair)
+        return float(ticker["last"])
+    except Exception:
+        return 0.0
 
-    # Otherwise HOLD
-    return {
-        "action": "HOLD",
-        "amount": 0.0,
-        "reason": "Neutral zone"
-    }
+
+# ======================================================
+# GRID SIGNAL
+# aggressive=True  → faster scalping
+# aggressive=False → conservative
+# ======================================================
+def check_grid_signal(price, balance, aggressive=True):
+    if price == 0:
+        return "NO DATA"
+
+    # grid sizing
+    grid_pct = 0.003 if aggressive else 0.0015   # 0.3% vs 0.15%
+    upper = price * (1 + grid_pct)
+    lower = price * (1 - grid_pct)
+
+    # center zone = HOLD
+    if lower < price < upper:
+        return "HOLD — Neutral zone"
+
+    if price <= lower:
+        return f"BUY @ {price}"
+
+    if price >= upper:
+        return f"SELL @ {price}"
+
+    return "HOLD"
+
+
+# ======================================================
+# ORDER EXECUTION (ONLY IF LIVE)
+# ======================================================
+async def execute_order(exchange, pair, action, balance):
+    size = balance * 0.10                   # fixed 10% of balance
+    if size < 1:
+        return "NO SIZE"
+
+    if "BUY" in action:
+        order = await exchange.create_market_buy_order(pair, size)
+    elif "SELL" in action:
+        order = await exchange.create_market_sell_order(pair, size)
+    else:
+        return "NO ORDER"
+
+    return str(order)
