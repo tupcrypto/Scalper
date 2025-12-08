@@ -1,122 +1,123 @@
+import asyncio
 import logging
-from telegram import Update
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     ContextTypes,
 )
 import config
-import bitget_api
+import ccxt
 import grid_engine
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
+# -----------------------------
+# INIT EXCHANGE
+# -----------------------------
+exchange = ccxt.bitget({
+    "apiKey": config.EXCHANGE_API_KEY,
+    "secret": config.EXCHANGE_API_SECRET,
+    "password": config.EXCHANGE_PASSPHRASE,
+    "enableRateLimit": True,
+})
 
-# --------------------------------------------
-# Safe internal balance (no API)
-# --------------------------------------------
-def get_bot_balance() -> float:
-    return float(config.ASSUMED_BALANCE_USDT)
+# -----------------------------
+# CHECK BALANCE
+# -----------------------------
+async def get_balance():
+    try:
+        balance = exchange.fetch_balance()
+        futures = balance.get("USDT", {})
+        free = futures.get("free", 0)
+        return round(float(free), 2)
+    except Exception as e:
+        return f"RAW BALANCE ERROR:\n{e}"
 
+# -----------------------------
+# /scan COMMAND
+# -----------------------------
+async def scan(update, context: ContextTypes.DEFAULT_TYPE):
+    bal = await get_balance()
+    await update.message.reply_text(f"SCAN DEBUG — BALANCE: {bal} USDT")
 
-# --------------------------------------------
-# /scan command — manual check
-# --------------------------------------------
-async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    balance = get_bot_balance()
-    lines = [f"SCAN DEBUG — BALANCE: {balance} USDT"]
-
-    for pair in config.PAIRS:
+    for p in config.PAIRS:
         try:
-            price = bitget_api.get_price(pair)
-            action = grid_engine.check_grid_signal(pair, price, balance)
-            lines.append(f"{pair}: price={price}")
-            lines.append(f"{pair}: {action}")
-        except Exception as e:
-            lines.append(f"{pair}: ERROR: {e}")
+            ticker = exchange.fetch_ticker(p)
+            price = ticker['last']
+        except:
+            await update.message.reply_text(f"{p}: TICKER ERROR")
+            continue
 
-    await update.message.reply_text("\n".join(lines))
+        action = grid_engine.check_grid_signal(price, p)
 
+        await update.message.reply_text(
+            f"{p}: price={price}\n{action}"
+        )
 
-# --------------------------------------------
-# Background job — executes automatically
-# --------------------------------------------
-async def grid_job(context: ContextTypes.DEFAULT_TYPE):
-    balance = get_bot_balance()
-
-    for pair in config.PAIRS:
+# -----------------------------
+# GRID LOOP
+# -----------------------------
+async def grid_loop(application):
+    while True:
         try:
-            price = bitget_api.get_price(pair)
-            decision = grid_engine.check_grid_signal(pair, price, balance)
-            logger.info(f"[GRID] {pair} price={price} decision={decision}")
+            for p in config.PAIRS:
+                ticker = exchange.fetch_ticker(p)
+                price = ticker['last']
+                action = grid_engine.check_grid_signal(price, p)
 
-            if config.LIVE_TRADING:
-                grid_engine.execute_if_needed(pair, price, balance)
+                if "BUY" in action:
+                    size = grid_engine.calc_order_size()
+                    if config.LIVE_TRADING:
+                        exchange.create_market_buy_order(p, size)
+
+                if "SELL" in action:
+                    size = grid_engine.calc_order_size()
+                    if config.LIVE_TRADING:
+                        exchange.create_market_sell_order(p, size)
+
+                # send updates to Telegram
+                if config.TELEGRAM_CHAT_ID:
+                    await application.bot.send_message(
+                        chat_id=config.TELEGRAM_CHAT_ID,
+                        text=f"[GRID] {p}: {action}"
+                    )
 
         except Exception as e:
-            logger.error(f"[GRID] {pair} error: {e}")
+            if config.TELEGRAM_CHAT_ID:
+                await application.bot.send_message(
+                    chat_id=config.TELEGRAM_CHAT_ID,
+                    text=f"[GRID LOOP ERROR]\n{e}"
+                )
 
+        await asyncio.sleep(25)  # aggressive mode
 
-# --------------------------------------------
-# /start command — schedules repeating job
-# --------------------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    jq = context.application.job_queue   # IMPORTANT FIX
+# -----------------------------
+# /start COMMAND
+# -----------------------------
+async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("BOT STARTED — AGGRESSIVE MODE")
 
-    # avoid double scheduling
-    jobs = jq.get_jobs_by_name("grid_loop")
-    if jobs:
-        await update.message.reply_text("⚠️ Auto loop already running…")
-        return
+    application = context.application
+    asyncio.create_task(grid_loop(application))
 
-    # RUN EVERY 20 SECONDS
-    jq.run_repeating(
-        grid_job,
-        interval=20,
-        first=5,
-        name="grid_loop"
-    )
+# -----------------------------
+# /balance COMMAND
+# -----------------------------
+async def balance(update, context):
+    bal = await get_balance()
+    await update.message.reply_text(f"BALANCE: {bal} USDT")
 
-    logger.info("Grid job scheduled (every 20 seconds)")
-    await update.message.reply_text("🚀 BOT STARTED — AUTO LOOP ACTIVE")
-
-
-# --------------------------------------------
-# /stop — stop grid loop
-# --------------------------------------------
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    jq = context.application.job_queue
-
-    jobs = jq.get_jobs_by_name("grid_loop")
-    for job in jobs:
-        job.schedule_removal()
-
-    await update.message.reply_text("🛑 BOT STOPPED")
-
-
-# --------------------------------------------
-# MAIN RUNNER — ensure job queue enabled
-# --------------------------------------------
+# -----------------------------
+# MAIN
+# -----------------------------
 def main():
-    app = Application.builder() \
-        .token(config.TELEGRAM_BOT_TOKEN) \
-        .concurrent_updates(True) \
-        .build()
+    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    # VERY IMPORTANT: this initializes the job queue
-    jq = app.job_queue
-
-    app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("balance", balance))
 
-    logger.info("Starting polling…")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
