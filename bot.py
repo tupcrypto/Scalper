@@ -1,131 +1,113 @@
-import asyncio
+import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-import ccxt
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 import config
+import bitget_api
 import grid_engine
 
-# -----------------------------------------------------
-# GET BITGET EXCHANGE WITH FUTURES BALANCE
-# -----------------------------------------------------
-def get_exchange():
-    exchange = ccxt.bitget({
-        'apiKey': config.EXCHANGE_API_KEY,
-        'secret': config.EXCHANGE_API_SECRET,
-        'password': config.EXCHANGE_PASSPHRASE,
-        'options': {
-            'defaultType': 'swap',         # <--- Very Important
-        }
-    })
-    exchange.load_markets()
-    return exchange
+# -------------------------------------------------
+# Logging
+# -------------------------------------------------
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
-# -----------------------------------------------------
-# /scan COMMAND HANDLER
-# -----------------------------------------------------
+
+# -------------------------------------------------
+# Helper: get assumed balance (no API)
+# -------------------------------------------------
+def get_bot_balance() -> float:
+    return float(config.ASSUMED_BALANCE_USDT)
+
+
+# -------------------------------------------------
+# /scan command
+# -------------------------------------------------
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        exchange = get_exchange()
-        balance_raw = exchange.fetch_balance({'type': 'swap'})
-        usdt = balance_raw['total']['USDT']
-    except Exception as e:
-        await update.message.reply_text(f"❌ RAW BALANCE ERROR:\n{e}")
-        return
-
-    reply_text = f"SCAN DEBUG — BALANCE: {usdt:.1f} USDT\n"
+    balance = get_bot_balance()
+    lines = [f"SCAN DEBUG — BALANCE: {balance} USDT"]
 
     for pair in config.PAIRS:
         try:
-            ticker = exchange.fetch_ticker(pair)
-            price = ticker['last']
-            reply_text += f"{pair}: price={price}\n"
-            action = grid_engine.check_grid_signal(pair, price, usdt)
-            reply_text += f"{pair}: {action}\n"
+            price = bitget_api.get_price(pair)
+            decision = grid_engine.check_grid_signal(pair, price, balance)
+            lines.append(f"{pair}: price={price}")
+            lines.append(f"{pair}: {decision}")
         except Exception as e:
-            reply_text += f"{pair}: SCAN ERROR: {e}\n"
+            lines.append(f"{pair}: SCAN ERROR: {e}")
 
-    await update.message.reply_text(reply_text)
+    await update.message.reply_text("\n".join(lines))
 
-# -----------------------------------------------------
-# /start AUTO LOOP
-# -----------------------------------------------------
-AUTO_LOOP_TASK = None
 
+# -------------------------------------------------
+# Background grid job (runs every N seconds)
+# -------------------------------------------------
+async def grid_job(context: ContextTypes.DEFAULT_TYPE):
+    balance = get_bot_balance()
+
+    for pair in config.PAIRS:
+        try:
+            price = bitget_api.get_price(pair)
+            decision = grid_engine.check_grid_signal(pair, price, balance)
+            logger.info(f"[GRID] {pair} price={price} decision={decision}")
+
+            if config.LIVE_TRADING:
+                grid_engine.execute_if_needed(pair, price, balance)
+
+        except Exception as e:
+            logger.error(f"[GRID] {pair} error: {e}")
+
+
+# -------------------------------------------------
+# /start command – schedule job
+# -------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global AUTO_LOOP_TASK
-
-    if AUTO_LOOP_TASK is not None:
-        await update.message.reply_text("⚠️ Auto-grid loop already running…")
+    # Avoid double-scheduling
+    existing = context.job_queue.get_jobs_by_name("grid_loop")
+    if existing:
+        await update.message.reply_text("⚠️ Bot already running.")
         return
 
-    await update.message.reply_text("🚀 BOT STARTED AND AUTO-GRID LOOP ACTIVATED…")
+    # Schedule repeating job: every 20s, first run after 5s
+    context.job_queue.run_repeating(
+        grid_job, interval=20, first=5, name="grid_loop"
+    )
 
-    # create task inside loop
-    loop = asyncio.get_running_loop()
-    AUTO_LOOP_TASK = loop.create_task(auto_loop(context))
+    logger.info("Grid job scheduled (every 20 seconds).")
+    await update.message.reply_text("🚀 BOT STARTED AND AUTO GRID LOOP SCHEDULED…")
 
-# -----------------------------------------------------
-# BACKGROUND LOOP
-# -----------------------------------------------------
-async def auto_loop(context):
-    await asyncio.sleep(2)
-    print("🔁 AUTO LOOP STARTED")
 
-    while True:
-        try:
-            exchange = get_exchange()
-            balance_raw = exchange.fetch_balance({'type': 'swap'})
-            usdt = balance_raw['total']['USDT']
-        except Exception as e:
-            print(f"[AUTO] BALANCE ERROR: {e}")
-            await asyncio.sleep(120)
-            continue
+# -------------------------------------------------
+# /stop command – cancel job
+# -------------------------------------------------
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    jobs = context.job_queue.get_jobs_by_name("grid_loop")
+    for job in jobs:
+        job.schedule_removal()
 
-        print(f"[AUTO] BALANCE = {usdt}")
+    logger.info("Grid job stopped.")
+    await update.message.reply_text("🛑 BOT STOPPED.")
 
-        for pair in config.PAIRS:
-            try:
-                ticker = exchange.fetch_ticker(pair)
-                price = ticker['last']
-                print(f"[AUTO] {pair} price={price}")
 
-                action = grid_engine.check_grid_signal(pair, price, usdt)
-                print(f"[AUTO] {pair} => {action}")
-
-                # ACTUAL TRADE EXECUTIONS
-                if config.LIVE_TRADING and action.startswith("BUY"):
-                    size = grid_engine.calc_order_size(usdt)
-                    order = exchange.create_market_buy_order(pair, size)
-                    print(f"[LIVE BUY] {pair} size={size}")
-
-                elif config.LIVE_TRADING and action.startswith("SELL"):
-                    size = grid_engine.calc_order_size(usdt)
-                    order = exchange.create_market_sell_order(pair, size)
-                    print(f"[LIVE SELL] {pair} size={size}")
-
-            except Exception as e:
-                print(f"[AUTO] {pair} ERROR: {e}")
-
-        # wait 2 min
-        await asyncio.sleep(120)
-
-# -----------------------------------------------------
-# BUILD AND RUN BOT
-# -----------------------------------------------------
-async def post_init(application: Application):
-    # START AUTO_LOOP ONLY AFTER BOT IS READY
-    global AUTO_LOOP_TASK
-    loop = asyncio.get_running_loop()
-    AUTO_LOOP_TASK = loop.create_task(auto_loop(None))
-    print("🔥 AUTO-LOOP TASK CREATED AFTER INIT")
-
+# -------------------------------------------------
+# Main runner
+# -------------------------------------------------
 def main():
-    application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("scan", scan))
-    application.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stop", stop))
 
-    application.run_polling()
+    logger.info("Starting bot polling…")
+    app.run_polling()
+
 
 if __name__ == "__main__":
     main()
