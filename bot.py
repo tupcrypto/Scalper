@@ -1,20 +1,20 @@
-import asyncio
 import logging
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler
 import config
 import grid_engine
+import asyncio
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s — %(levelname)s — %(message)s"
 )
 
-GRID_TASK = None   # global auto-loop task
+GRID_TASK = None
 
 
-# ==========================
-# GET BALANCE AND PRICE
-# ==========================
+# =====================================================
+# SCAN COMMAND
+# =====================================================
 async def scan(update, context):
     try:
         exchange = grid_engine.get_exchange()
@@ -28,7 +28,11 @@ async def scan(update, context):
                 resp += f"{pair}: ❌ price unavailable\n"
                 continue
 
-            action = grid_engine.check_grid_signal(price, balance, aggressive=config.AGGRESSIVE)
+            action = grid_engine.check_grid_signal(
+                price,
+                balance,
+                aggressive=config.AGGRESSIVE
+            )
 
             resp += f"{pair}: price={price}\n"
             resp += f"{pair}: {action}\n\n"
@@ -39,9 +43,9 @@ async def scan(update, context):
         await update.message.reply_text(f"SCAN ERROR:\n{str(e)}")
 
 
-# ==========================
-# AUTO LOOP (AGGRESSIVE MODE)
-# ==========================
+# =====================================================
+# AUTO LOOP
+# =====================================================
 async def grid_loop(app):
     exchange = grid_engine.get_exchange()
 
@@ -53,13 +57,13 @@ async def grid_loop(app):
                 price = await grid_engine.get_price(exchange, pair)
                 action = grid_engine.check_grid_signal(price, balance, aggressive=True)
 
-                # SEND LOG TO OWNER ONLY
+                # notify owner
                 await app.bot.send_message(
                     chat_id=config.TELEGRAM_CHAT_ID,
                     text=f"[GRID] {pair} — {action}"
                 )
 
-                # LIVE MODE EXECUTION
+                # execute if live mode
                 if config.LIVE_TRADING and ("BUY" in action or "SELL" in action):
                     await grid_engine.execute_order(exchange, pair, action, balance)
 
@@ -69,18 +73,17 @@ async def grid_loop(app):
                 text=f"[GRID LOOP ERROR]\n{str(e)}"
             )
 
-        await asyncio.sleep(30)  # aggressive scan speed
+        await asyncio.sleep(30)
 
 
-# ==========================
-# START COMMAND
-# ==========================
+# =====================================================
+# START
+# =====================================================
 async def start(update, context):
     global GRID_TASK
 
     await update.message.reply_text("BOT STARTED — AGGRESSIVE MODE")
 
-    # stop any old loop
     if GRID_TASK:
         GRID_TASK.cancel()
 
@@ -88,9 +91,9 @@ async def start(update, context):
     GRID_TASK = asyncio.create_task(grid_loop(app))
 
 
-# ==========================
-# STOP COMMAND
-# ==========================
+# =====================================================
+# STOP
+# =====================================================
 async def stop(update, context):
     global GRID_TASK
 
@@ -101,19 +104,21 @@ async def stop(update, context):
     await update.message.reply_text("AUTO LOOP STOPPED")
 
 
-# ==========================
-# MAIN APPLICATION
-# ==========================
-async def main():
+# =====================================================
+# ENTRY POINT  ❗ IMPORTANT ❗
+# =====================================================
+def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
 
-    logging.info("BOT IS RUNNING — POLLING MODE")
-    await app.run_polling()
+    logging.info("BOT RUNNING — POLLING MODE")
+
+    # THIS LINE FIXES EVERYTHING — DO NOT MODIFY
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
