@@ -1,98 +1,99 @@
 import asyncio
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 import config
+import grid_engine
 import bitget_api
 
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-)
+# --------------------------------------------------------------
+# GET BALANCE (ASSUMED MODE ONLY — NO BITGET API CALLS)
+# --------------------------------------------------------------
+def get_bot_balance():
+    # ALWAYS return assumed balance
+    return config.ASSUMED_BALANCE_USDT
 
 
-application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+# --------------------------------------------------------------
+# /scan — get prices and grid decisions
+# --------------------------------------------------------------
+async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    balance = get_bot_balance()
+
+    msg = f"SCAN DEBUG — BALANCE: {balance} USDT\n"
+    for p in config.PAIRS:
+        try:
+            price = bitget_api.get_price(p)
+            msg += f"{p}: price={price}\n"
+            decision = grid_engine.check_grid_signal(p, price, balance)
+            msg += f"{p}: {decision}\n"
+        except Exception as e:
+            msg += f"{p}: SCAN ERROR: {str(e)}\n"
+
+    await update.message.reply_text(msg)
 
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --------------------------------------------------------------
+# /start — begin auto loop
+# --------------------------------------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global auto_task
+    if config.GRID_ACTIVE:
+        await update.message.reply_text("Bot already running!")
+        return
+
     config.GRID_ACTIVE = True
-    await update.message.reply_text("🚀 BOT STARTED — Auto scan loop ON")
-    asyncio.create_task(auto_loop())
+    await update.message.reply_text("BOT STARTED AND POLLING...")
+
+    auto_task = asyncio.create_task(auto_loop())
 
 
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --------------------------------------------------------------
+# /stop — stop loop
+# --------------------------------------------------------------
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global auto_task
     config.GRID_ACTIVE = False
-    await update.message.reply_text("🛑 BOT STOPPED")
-
-
-async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     try:
-        exchange = bitget_api.get_exchange()
-    except Exception as e:
-        await update.message.reply_text(f"❌ EXCHANGE INIT ERROR:\n{e}")
-        return
-
-    # FETCH RAW BALANCE (the correct way)
-    try:
-        raw_balance = exchange.fetch_balance({"productType": "USDT-FUTURES"})
-    except Exception as e:
-        await update.message.reply_text(
-            f"❌ RAW BALANCE ERROR:\n{e}"
-        )
-        return
-
-    # SEND RAW DICTIONARY (trimmed)
-    pretty = str(raw_balance)[:3500]
-    await update.message.reply_text(
-        "📦 RAW BITGET FUTURES BALANCE OBJECT:\n\n" + pretty
-    )
-
-    # TEMP BALANCE PARSER — will become correct after raw inspection
-    try:
-        bal = bitget_api.get_usdt_balance(exchange)
+        auto_task.cancel()
     except:
-        bal = 0
+        pass
 
-    lines = [f"🟡 Parsed Balance = {bal}"]
-
-    for pair in config.PAIRS:
-        try:
-            price = bitget_api.get_price(exchange, pair)
-        except:
-            price = 0
-        lines.append(f"{pair}: price={price}")
-
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text("BOT STOPPED.")
 
 
+# --------------------------------------------------------------
+# AUTO LOOP — DOES NOT READ BALANCE FROM API
+# --------------------------------------------------------------
 async def auto_loop():
-    await asyncio.sleep(3)
-
-    while True:
-        if not config.GRID_ACTIVE:
-            await asyncio.sleep(10)
-            continue
-
+    while config.GRID_ACTIVE:
         try:
-            exchange = bitget_api.get_exchange()
-            for pair in config.PAIRS:
-                price = bitget_api.get_price(exchange, pair)
-                print(f"[AUTO] {pair}: price={price}")
+            balance = get_bot_balance()
+            for p in config.PAIRS:
+                price = bitget_api.get_price(p)
+                decision = grid_engine.check_grid_signal(p, price, balance)
+
+                # send logs to Telegram if needed
+                print(f"[AUTO] {p}: {decision}")
+
+                # LIVE orders execute inside grid_engine
+                if config.LIVE_TRADING:
+                    grid_engine.execute_if_needed(p, price, balance)
 
         except Exception as e:
-            print("[AUTO LOOP ERROR]:", e)
+            print(f"AUTO LOOP ERROR: {str(e)}")
 
-        await asyncio.sleep(120)  # every 2 min
+        await asyncio.sleep(120)
 
 
-def main():
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("scan", scan_cmd))
+# --------------------------------------------------------------
+# BOOTSTRAP TELEGRAM
+# --------------------------------------------------------------
+application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    print("🤖 Telegram bot LIVE (polling)")
-    application.run_polling(stop_signals=None)
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("stop", stop))
+application.add_handler(CommandHandler("scan", scan))
 
 
 if __name__ == "__main__":
-    main()
+    application.run_polling()
