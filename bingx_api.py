@@ -7,11 +7,25 @@ import config
 #  EXCHANGE HELPER
 # =====================================================
 
-def get_exchange():
+def _create_bingx_client():
     """
-    Returns a BingX futures (swap) client.
+    Try to create a BingX client via ccxt.
+    If this ccxt build doesn't support BingX, raise a RuntimeError
+    with a clear message.
     """
-    exchange = ccxt.bingx({
+    # Some ccxt builds simply don't include 'bingx' class.
+    bingx_cls = getattr(ccxt, "bingx", None)
+    if bingx_cls is None:
+        raise RuntimeError(
+            "Your ccxt installation does NOT include 'bingx'. "
+            "This environment cannot talk to BingX via ccxt. "
+            "You must either:\n"
+            "- upgrade/downgrade ccxt to a build that supports BingX, or\n"
+            "- change EXCHANGE to a supported one (e.g. bybit / binance), or\n"
+            "- host the bot on a Python version where latest ccxt supports BingX."
+        )
+
+    exchange = bingx_cls({
         "apiKey": config.BINGX_API_KEY,
         "secret": config.BINGX_API_SECRET,
         "enableRateLimit": True,
@@ -20,6 +34,14 @@ def get_exchange():
         },
     })
     return exchange
+
+
+def get_exchange():
+    """
+    Public helper used by the bot.
+    Will raise RuntimeError with a human-readable message if BingX is unsupported.
+    """
+    return _create_bingx_client()
 
 
 def get_usdt_balance(exchange) -> float:
@@ -106,7 +128,6 @@ def close_position(exchange, pair: str, side: str, amount: float) -> str:
     if amount <= 0:
         return "⚠️ Skipped close: amount <= 0"
 
-    # If we are closing a LONG, we need to SELL. Closing a SHORT needs a BUY.
     ccxt_side = "sell" if side == "LONG" else "buy"
 
     try:
