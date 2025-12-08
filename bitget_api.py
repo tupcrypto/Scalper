@@ -6,36 +6,26 @@ def get_exchange():
     return ccxt.bitget({
         "apiKey": config.BITGET_API_KEY,
         "secret": config.BITGET_API_SECRET,
-        "password": config.BITGET_API_PASSWORD,   # REQUIRED by Bitget
+        "password": config.BITGET_API_PASSWORD,
         "options": {
-            "defaultType": "swap",                # for perpetual futures
-            "defaultProductType": "USDT-FUTURES"  # THIS FIXES THE PERMISSION ISSUE
+            "defaultType": "swap",       # VERY IMPORTANT – this tells Bitget we want futures
         }
     })
 
 
-def get_price(exchange, pair):
-    ticker = exchange.fetch_ticker(pair)
-    return ticker["last"]
-
-
-def get_usdt_balance(exchange):
-    # This will be fixed AFTER we see RAW OBJECT
-    # For now return total equity or 0
-    raw = exchange.fetch_balance({"productType": "USDT-FUTURES"})
-
-    # TRY VARIANTS SAFELY (temporary)
+def get_futures_balance():
     try:
-        if "USDT" in raw and "total" in raw["USDT"]:
-            return raw["USDT"]["total"]
-    except:
-        pass
+        exchange = get_exchange()
+        balance = exchange.fetch_balance()
+        # Unified futures balance is in 'USDT'
+        usdt = balance.get("USDT", {})
+        free = float(usdt.get("free", 0))
+        return free
+    except Exception as e:
+        return f"RAW FUTURES BALANCE ERROR: {str(e)}"
 
-    try:
-        if "total" in raw and "USDT" in raw["total"]:
-            return raw["total"]["USDT"]
-    except:
-        pass
 
-    return 0
-
+def get_price(symbol):
+    exchange = get_exchange()
+    ticker = exchange.fetch_ticker(symbol)
+    return ticker['last']
