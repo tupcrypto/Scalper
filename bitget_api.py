@@ -12,7 +12,7 @@ def get_exchange():
         exchange = ccxt.bitget({
             "apiKey": config.EXCHANGE_API_KEY,
             "secret": config.EXCHANGE_API_SECRET,
-            "password": config.EXCHANGE_PASSPHRASE,  # Bitget passphrase is required
+            "password": config.EXCHANGE_PASSPHRASE,
             "enableRateLimit": True,
             "options": {
                 "defaultType": "swap",  # USDT perpetual futures
@@ -24,28 +24,61 @@ def get_exchange():
 
 
 # =====================================================
-# CORRECT FUTURES BALANCE FETCH FOR BITGET
+# UNIVERSAL BITGET FUTURES BALANCE FETCH
 # =====================================================
 
 def get_usdt_balance(exchange):
     """
-    IMPORTANT:
-    Bitget futures balance is NOT under balance["USDT"].
-    It is returned under keys like "USDT:USDT", "BTC:USDT", etc.
-    So we must fetch futures balance and scan all keys.
+    Correct handling of Bitget futures balance.
+    Works on:
+    - classic futures
+    - unified accounts
+    - cross margin
+    - isolated margin
+    - USDT-M perpetual
     """
+
     try:
-        # fetch futures balance explicitly
-        balance = exchange.fetch_balance({"type": "swap"})
+        # Fetch futures balance
+        bal = exchange.fetch_balance({"type": "swap"})
 
-        # scan keys to find futures USDT balance
-        for k, v in balance.items():
-            if isinstance(v, dict) and "USDT" in k:  # ex: "USDT:USDT"
-                free = v.get("free", 0.0)
-                total = v.get("total", free)
-                return float(total or free or 0.0)
+        # 1) Try direct total USDT balance (new CCXT format)
+        if "total" in bal and isinstance(bal["total"], dict):
+            if "USDT" in bal["total"]:
+                return float(bal["total"]["USDT"])
 
-        # fallback
+        # 2) Try Bitget-style key like "USDT:USDT"
+        for k, v in bal.items():
+            if isinstance(v, dict) and "USDT" in k:
+                if "total" in v:
+                    return float(v["total"])
+                if "free" in v:
+                    return float(v["free"])
+
+        # 3) Try raw info structure (most accurate)
+        if "info" in bal:
+            info = bal["info"]
+
+            # unified account structure
+            if isinstance(info, dict):
+                # total equity in USDT futures
+                if "totalEquity" in info:
+                    return float(info["totalEquity"])
+
+                # USDT equity field
+                if "usdtEquity" in info:
+                    return float(info["usdtEquity"])
+
+                # nested contract account
+                if "data" in info and isinstance(info["data"], dict):
+                    data = info["data"]
+
+                    if "usdtEquity" in data:
+                        return float(data["usdtEquity"])
+                    if "totalEquity" in data:
+                        return float(data["totalEquity"])
+
+        # 4) Last fallback — zero
         return 0.0
 
     except Exception as e:
