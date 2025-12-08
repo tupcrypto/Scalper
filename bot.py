@@ -1,5 +1,5 @@
 # ==========================================
-# bot.py (FULL FILE – REPLACE EVERYTHING)
+# bot.py (FULL FILE)
 # ==========================================
 
 import asyncio
@@ -11,12 +11,11 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ContextTypes,
+    ContextTypes
 )
 
-
 # ==========================================
-# EXCHANGE INIT
+# BITGET INIT
 # ==========================================
 
 def get_exchange():
@@ -29,17 +28,24 @@ def get_exchange():
 
 
 # ==========================================
-# GET BALANCE
+# FIXED — BITGET BALANCE FETCH
 # ==========================================
 
 async def get_balance():
     try:
         exchange = get_exchange()
         balance = exchange.fetch_balance()
+
+        # ---- FUTURES BALANCE FIX ----
+        if "info" in balance and "data" in balance["info"]:
+            data = balance["info"]["data"]
+            if len(data) > 0 and "usdtEquity" in data[0]:
+                equity = float(data[0]["usdtEquity"])
+                return equity
+
+        # fallback
         futures = balance.get("USDT", {})
-
         total = futures.get("total", 0)
-
         return float(total)
 
     except Exception as e:
@@ -52,7 +58,6 @@ async def get_balance():
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = await get_balance()
-
     msg = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n"
 
     exchange = get_exchange()
@@ -60,16 +65,12 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for pair in config.PAIRS:
         try:
             ticker = exchange.fetch_ticker(pair)
-            price = ticker["last"]
+            price = float(ticker["last"])
 
             action = grid_engine.check_grid_signal(price, balance)
 
-            if isinstance(action, dict):
-                msg += f"{pair}: price={price}\n"
-                msg += f"{pair}: {action['action']} — {action['reason']}\n\n"
-            else:
-                msg += f"{pair}: price={price}\n"
-                msg += f"{pair}: No grid action\n\n"
+            msg += f"\n{pair}: price={price}\n"
+            msg += f"{pair}: {action['action']} — {action['reason']}\n"
 
         except Exception as e:
             msg += f"{pair}: ERROR - {str(e)}\n"
@@ -78,27 +79,24 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# AUTO GRID LOOP
+# AUTO LOOP
 # ==========================================
 
 async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
     exchange = get_exchange()
-
     balance = await get_balance()
 
     for pair in config.PAIRS:
         try:
             ticker = exchange.fetch_ticker(pair)
-            price = ticker["last"]
+            price = float(ticker["last"])
 
             decision = grid_engine.check_grid_signal(price, balance)
 
-            # HOLD → skip
             if decision["action"] == "HOLD":
                 continue
 
             amount = float(decision["amount"])
-
             if amount <= 0:
                 continue
 
@@ -109,7 +107,7 @@ async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
                 order = exchange.create_market_sell_order(pair, amount)
 
             text = f"""
-GRID TRADE EXECUTED 🚀
+🔁 GRID TRADE EXECUTED
 PAIR: {pair}
 ACTION: {decision['action']}
 AMOUNT: {amount}
@@ -118,16 +116,19 @@ REASON: {decision['reason']}
             await context.bot.send_message(config.TELEGRAM_CHAT_ID, text)
 
         except Exception as e:
-            await context.bot.send_message(config.TELEGRAM_CHAT_ID, f"[GRID LOOP ERROR]\n{str(e)}")
+            await context.bot.send_message(
+                config.TELEGRAM_CHAT_ID,
+                f"[GRID LOOP ERROR]\n{str(e)}"
+            )
 
 
 # ==========================================
-# START COMMAND
+# START
 # ==========================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    job = context.job_queue.run_repeating(grid_loop, interval=120)
-    await update.message.reply_text("AUTO GRID STARTED 👍")
+    context.job_queue.run_repeating(grid_loop, interval=120)
+    await update.message.reply_text("BOT STARTED — AGGRESSIVE MODE")
 
 
 # ==========================================
