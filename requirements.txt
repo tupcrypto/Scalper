@@ -1,4 +1,5 @@
 python-telegram-bot[job-queue]==20.7
+apscheduler==3.10.4
 ccxt==4.2.93
 requests==2.31.0
 pytz
