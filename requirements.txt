@@ -1,4 +1,4 @@
-ccxt
-python-telegram-bot==20.3
-aiohttp
-pandas
+python-telegram-bot[job-queue]==20.7
+ccxt==4.2.93
+requests==2.31.0
+pytz
