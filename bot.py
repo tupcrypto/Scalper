@@ -1,123 +1,147 @@
+# ==========================================
+# bot.py (FULL FILE – REPLACE EVERYTHING)
+# ==========================================
+
 import asyncio
-import logging
+import ccxt
+import config
+import grid_engine
+
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
 )
-import config
-import ccxt
-import grid_engine
 
-logging.basicConfig(level=logging.INFO)
 
-# -----------------------------
-# INIT EXCHANGE
-# -----------------------------
-exchange = ccxt.bitget({
-    "apiKey": config.EXCHANGE_API_KEY,
-    "secret": config.EXCHANGE_API_SECRET,
-    "password": config.EXCHANGE_PASSPHRASE,
-    "enableRateLimit": True,
-})
+# ==========================================
+# EXCHANGE INIT
+# ==========================================
 
-# -----------------------------
-# CHECK BALANCE
-# -----------------------------
+def get_exchange():
+    return ccxt.bitget({
+        "apiKey": config.BITGET_API_KEY,
+        "secret": config.BITGET_API_SECRET,
+        "password": config.BITGET_PASSPHRASE,
+        "enableRateLimit": True,
+    })
+
+
+# ==========================================
+# GET BALANCE
+# ==========================================
+
 async def get_balance():
     try:
+        exchange = get_exchange()
         balance = exchange.fetch_balance()
         futures = balance.get("USDT", {})
-        free = futures.get("free", 0)
-        return round(float(free), 2)
+
+        total = futures.get("total", 0)
+
+        return float(total)
+
     except Exception as e:
-        return f"RAW BALANCE ERROR:\n{e}"
+        return 0.0
 
-# -----------------------------
-# /scan COMMAND
-# -----------------------------
-async def scan(update, context: ContextTypes.DEFAULT_TYPE):
-    bal = await get_balance()
-    await update.message.reply_text(f"SCAN DEBUG — BALANCE: {bal} USDT")
 
-    for p in config.PAIRS:
+# ==========================================
+# SCAN COMMAND
+# ==========================================
+
+async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    balance = await get_balance()
+
+    msg = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n"
+
+    exchange = get_exchange()
+
+    for pair in config.PAIRS:
         try:
-            ticker = exchange.fetch_ticker(p)
-            price = ticker['last']
-        except:
-            await update.message.reply_text(f"{p}: TICKER ERROR")
-            continue
+            ticker = exchange.fetch_ticker(pair)
+            price = ticker["last"]
 
-        action = grid_engine.check_grid_signal(price, p)
+            action = grid_engine.check_grid_signal(price, balance)
 
-        await update.message.reply_text(
-            f"{p}: price={price}\n{action}"
-        )
-
-# -----------------------------
-# GRID LOOP
-# -----------------------------
-async def grid_loop(application):
-    while True:
-        try:
-            for p in config.PAIRS:
-                ticker = exchange.fetch_ticker(p)
-                price = ticker['last']
-                action = grid_engine.check_grid_signal(price, p)
-
-                if "BUY" in action:
-                    size = grid_engine.calc_order_size()
-                    if config.LIVE_TRADING:
-                        exchange.create_market_buy_order(p, size)
-
-                if "SELL" in action:
-                    size = grid_engine.calc_order_size()
-                    if config.LIVE_TRADING:
-                        exchange.create_market_sell_order(p, size)
-
-                # send updates to Telegram
-                if config.TELEGRAM_CHAT_ID:
-                    await application.bot.send_message(
-                        chat_id=config.TELEGRAM_CHAT_ID,
-                        text=f"[GRID] {p}: {action}"
-                    )
+            if isinstance(action, dict):
+                msg += f"{pair}: price={price}\n"
+                msg += f"{pair}: {action['action']} — {action['reason']}\n\n"
+            else:
+                msg += f"{pair}: price={price}\n"
+                msg += f"{pair}: No grid action\n\n"
 
         except Exception as e:
-            if config.TELEGRAM_CHAT_ID:
-                await application.bot.send_message(
-                    chat_id=config.TELEGRAM_CHAT_ID,
-                    text=f"[GRID LOOP ERROR]\n{e}"
-                )
+            msg += f"{pair}: ERROR - {str(e)}\n"
 
-        await asyncio.sleep(25)  # aggressive mode
+    await update.message.reply_text(msg)
 
-# -----------------------------
-# /start COMMAND
-# -----------------------------
-async def start(update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT STARTED — AGGRESSIVE MODE")
 
-    application = context.application
-    asyncio.create_task(grid_loop(application))
+# ==========================================
+# AUTO GRID LOOP
+# ==========================================
 
-# -----------------------------
-# /balance COMMAND
-# -----------------------------
-async def balance(update, context):
-    bal = await get_balance()
-    await update.message.reply_text(f"BALANCE: {bal} USDT")
+async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
+    exchange = get_exchange()
 
-# -----------------------------
+    balance = await get_balance()
+
+    for pair in config.PAIRS:
+        try:
+            ticker = exchange.fetch_ticker(pair)
+            price = ticker["last"]
+
+            decision = grid_engine.check_grid_signal(price, balance)
+
+            # HOLD → skip
+            if decision["action"] == "HOLD":
+                continue
+
+            amount = float(decision["amount"])
+
+            if amount <= 0:
+                continue
+
+            if decision["action"] == "BUY":
+                order = exchange.create_market_buy_order(pair, amount)
+
+            elif decision["action"] == "SELL":
+                order = exchange.create_market_sell_order(pair, amount)
+
+            text = f"""
+GRID TRADE EXECUTED 🚀
+PAIR: {pair}
+ACTION: {decision['action']}
+AMOUNT: {amount}
+REASON: {decision['reason']}
+"""
+            await context.bot.send_message(config.TELEGRAM_CHAT_ID, text)
+
+        except Exception as e:
+            await context.bot.send_message(config.TELEGRAM_CHAT_ID, f"[GRID LOOP ERROR]\n{str(e)}")
+
+
+# ==========================================
+# START COMMAND
+# ==========================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    job = context.job_queue.run_repeating(grid_loop, interval=120)
+    await update.message.reply_text("AUTO GRID STARTED 👍")
+
+
+# ==========================================
 # MAIN
-# -----------------------------
+# ==========================================
+
 def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan))
-    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("start", start))
 
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
