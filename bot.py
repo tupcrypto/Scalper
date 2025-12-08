@@ -1,148 +1,142 @@
-# ==========================================
-# bot.py (FULL FILE)
-# ==========================================
-
+import os
 import asyncio
 import ccxt
+import logging
+from telegram.ext import ApplicationBuilder, CommandHandler
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import config
 import grid_engine
 
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes
-)
+logging.basicConfig(level=logging.INFO)
 
-# ==========================================
-# BITGET INIT
-# ==========================================
+# --------------------------------------------------------------------------------
+# PORT SERVER FOR RENDER
+# --------------------------------------------------------------------------------
+PORT = int(os.getenv("PORT", 8080))
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"BOT IS RUNNING")
+        
+def start_port_server():
+    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    server.serve_forever()
+
+threading.Thread(target=start_port_server).start()
+
+
+# --------------------------------------------------------------------------------
+# TELEGRAM + EXCHANGE INITIALIZER
+# --------------------------------------------------------------------------------
+_exchange = None
+_lock = asyncio.Lock()             # Prevent polling conflict
+
 
 def get_exchange():
-    return ccxt.bitget({
+    global _exchange
+    if _exchange:
+        return _exchange
+
+    _exchange = ccxt.bitget({
         "apiKey": config.BITGET_API_KEY,
         "secret": config.BITGET_API_SECRET,
-        "password": config.BITGET_PASSPHRASE,
+        "password": config.BITGET_API_PASSPHRASE,
         "enableRateLimit": True,
+        "options": {"defaultType": "swap"}
     })
+    return _exchange
 
-
-# ==========================================
-# FIXED — BITGET BALANCE FETCH
-# ==========================================
 
 async def get_balance():
+    ex = get_exchange()
     try:
-        exchange = get_exchange()
-        balance = exchange.fetch_balance()
-
-        # ---- FUTURES BALANCE FIX ----
-        if "info" in balance and "data" in balance["info"]:
-            data = balance["info"]["data"]
-            if len(data) > 0 and "usdtEquity" in data[0]:
-                equity = float(data[0]["usdtEquity"])
-                return equity
-
-        # fallback
-        futures = balance.get("USDT", {})
-        total = futures.get("total", 0)
-        return float(total)
-
+        bal = await asyncio.to_thread(ex.fetch_balance)
+        return float(bal["USDT"]["free"])
     except Exception as e:
+        logging.error(f"BALANCE ERROR: {e}")
         return 0.0
 
 
-# ==========================================
-# SCAN COMMAND
-# ==========================================
+# --------------------------------------------------------------------------------
+# GRID LOOP — LIVE MODE
+# --------------------------------------------------------------------------------
+async def grid_loop(app):
+    global _lock
+    async with _lock:      # prevent multiple loops
+        await app.bot.send_message(config.ADMIN_CHAT_ID, "GRID LOOP STARTED…")
 
-async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    balance = await get_balance()
-    msg = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n"
-
-    exchange = get_exchange()
-
-    for pair in config.PAIRS:
+    while True:
         try:
-            ticker = exchange.fetch_ticker(pair)
-            price = float(ticker["last"])
+            bal = await get_balance()
+            for pair in config.PAIRS:
+                price = await asyncio.to_thread(get_exchange().fetch_ticker, pair)
+                price = float(price["last"])
 
-            action = grid_engine.check_grid_signal(price, balance)
+                action = grid_engine.check_grid_signal(price, bal)
 
-            msg += f"\n{pair}: price={price}\n"
-            msg += f"{pair}: {action['action']} — {action['reason']}\n"
+                if action == "BUY":
+                    await app.bot.send_message(config.ADMIN_CHAT_ID,
+                        f"BUY SIGNAL for {pair} @ {price}")
+                    # PLACE ORDER LATER
+
+                elif action == "SELL":
+                    await app.bot.send_message(config.ADMIN_CHAT_ID,
+                        f"SELL SIGNAL for {pair} @ {price}")
+                    # PLACE ORDER LATER
 
         except Exception as e:
-            msg += f"{pair}: ERROR - {str(e)}\n"
+            await app.bot.send_message(config.ADMIN_CHAT_ID,
+                f"[GRID ERROR] {e}")
 
-    await update.message.reply_text(msg)
-
-
-# ==========================================
-# AUTO LOOP
-# ==========================================
-
-async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
-    exchange = get_exchange()
-    balance = await get_balance()
-
-    for pair in config.PAIRS:
-        try:
-            ticker = exchange.fetch_ticker(pair)
-            price = float(ticker["last"])
-
-            decision = grid_engine.check_grid_signal(price, balance)
-
-            if decision["action"] == "HOLD":
-                continue
-
-            amount = float(decision["amount"])
-            if amount <= 0:
-                continue
-
-            if decision["action"] == "BUY":
-                order = exchange.create_market_buy_order(pair, amount)
-
-            elif decision["action"] == "SELL":
-                order = exchange.create_market_sell_order(pair, amount)
-
-            text = f"""
-🔁 GRID TRADE EXECUTED
-PAIR: {pair}
-ACTION: {decision['action']}
-AMOUNT: {amount}
-REASON: {decision['reason']}
-"""
-            await context.bot.send_message(config.TELEGRAM_CHAT_ID, text)
-
-        except Exception as e:
-            await context.bot.send_message(
-                config.TELEGRAM_CHAT_ID,
-                f"[GRID LOOP ERROR]\n{str(e)}"
-            )
+        await asyncio.sleep(10)
 
 
-# ==========================================
-# START
-# ==========================================
+# --------------------------------------------------------------------------------
+# /start COMMAND
+# --------------------------------------------------------------------------------
+async def start(update, context):
+    await context.bot.send_message(update.effective_chat.id,
+        "BOT STARTED — AGGRESSIVE GRID MODE")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.job_queue.run_repeating(grid_loop, interval=120)
-    await update.message.reply_text("BOT STARTED — AGGRESSIVE MODE")
+    app = context.application
+    asyncio.create_task(grid_loop(app))
 
 
-# ==========================================
-# MAIN
-# ==========================================
+# --------------------------------------------------------------------------------
+# /scan COMMAND
+# --------------------------------------------------------------------------------
+async def scan(update, context):
+    try:
+        bal = await get_balance()
+        reply = f"SCAN DEBUG — BALANCE: {bal} USDT\n"
 
-def main():
+        for pair in config.PAIRS:
+            tick = await asyncio.to_thread(get_exchange().fetch_ticker, pair)
+            price = float(tick["last"])
+            reply += f"{pair}: price={price}\n"
+
+        await context.bot.send_message(update.effective_chat.id, reply)
+
+    except Exception as e:
+        await context.bot.send_message(update.effective_chat.id,
+            f"SCAN ERROR: {e}")
+
+
+# --------------------------------------------------------------------------------
+# MAIN APP
+# --------------------------------------------------------------------------------
+async def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", scan))
 
-    app.run_polling()
+    await app.run_polling()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
