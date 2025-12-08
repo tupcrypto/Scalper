@@ -9,26 +9,23 @@ import config
 import bitget_api
 import grid_engine
 
-# -------------------------------------------------
-# Logging
-# -------------------------------------------------
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 
-# -------------------------------------------------
-# Helper: get assumed balance (no API)
-# -------------------------------------------------
+# --------------------------------------------
+# Safe internal balance (no API)
+# --------------------------------------------
 def get_bot_balance() -> float:
     return float(config.ASSUMED_BALANCE_USDT)
 
 
-# -------------------------------------------------
-# /scan command
-# -------------------------------------------------
+# --------------------------------------------
+# /scan command — manual check
+# --------------------------------------------
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = get_bot_balance()
     lines = [f"SCAN DEBUG — BALANCE: {balance} USDT"]
@@ -36,18 +33,18 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for pair in config.PAIRS:
         try:
             price = bitget_api.get_price(pair)
-            decision = grid_engine.check_grid_signal(pair, price, balance)
+            action = grid_engine.check_grid_signal(pair, price, balance)
             lines.append(f"{pair}: price={price}")
-            lines.append(f"{pair}: {decision}")
+            lines.append(f"{pair}: {action}")
         except Exception as e:
-            lines.append(f"{pair}: SCAN ERROR: {e}")
+            lines.append(f"{pair}: ERROR: {e}")
 
     await update.message.reply_text("\n".join(lines))
 
 
-# -------------------------------------------------
-# Background grid job (runs every N seconds)
-# -------------------------------------------------
+# --------------------------------------------
+# Background job — executes automatically
+# --------------------------------------------
 async def grid_job(context: ContextTypes.DEFAULT_TYPE):
     balance = get_bot_balance()
 
@@ -64,48 +61,60 @@ async def grid_job(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"[GRID] {pair} error: {e}")
 
 
-# -------------------------------------------------
-# /start command – schedule job
-# -------------------------------------------------
+# --------------------------------------------
+# /start command — schedules repeating job
+# --------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Avoid double-scheduling
-    existing = context.job_queue.get_jobs_by_name("grid_loop")
-    if existing:
-        await update.message.reply_text("⚠️ Bot already running.")
+    jq = context.application.job_queue   # IMPORTANT FIX
+
+    # avoid double scheduling
+    jobs = jq.get_jobs_by_name("grid_loop")
+    if jobs:
+        await update.message.reply_text("⚠️ Auto loop already running…")
         return
 
-    # Schedule repeating job: every 20s, first run after 5s
-    context.job_queue.run_repeating(
-        grid_job, interval=20, first=5, name="grid_loop"
+    # RUN EVERY 20 SECONDS
+    jq.run_repeating(
+        grid_job,
+        interval=20,
+        first=5,
+        name="grid_loop"
     )
 
-    logger.info("Grid job scheduled (every 20 seconds).")
-    await update.message.reply_text("🚀 BOT STARTED AND AUTO GRID LOOP SCHEDULED…")
+    logger.info("Grid job scheduled (every 20 seconds)")
+    await update.message.reply_text("🚀 BOT STARTED — AUTO LOOP ACTIVE")
 
 
-# -------------------------------------------------
-# /stop command – cancel job
-# -------------------------------------------------
+# --------------------------------------------
+# /stop — stop grid loop
+# --------------------------------------------
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    jobs = context.job_queue.get_jobs_by_name("grid_loop")
+    jq = context.application.job_queue
+
+    jobs = jq.get_jobs_by_name("grid_loop")
     for job in jobs:
         job.schedule_removal()
 
-    logger.info("Grid job stopped.")
-    await update.message.reply_text("🛑 BOT STOPPED.")
+    await update.message.reply_text("🛑 BOT STOPPED")
 
 
-# -------------------------------------------------
-# Main runner
-# -------------------------------------------------
+# --------------------------------------------
+# MAIN RUNNER — ensure job queue enabled
+# --------------------------------------------
 def main():
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder() \
+        .token(config.TELEGRAM_BOT_TOKEN) \
+        .concurrent_updates(True) \
+        .build()
+
+    # VERY IMPORTANT: this initializes the job queue
+    jq = app.job_queue
 
     app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
 
-    logger.info("Starting bot polling…")
+    logger.info("Starting polling…")
     app.run_polling()
 
 
