@@ -1,157 +1,56 @@
-import config
-import bitget_api
+# ============================
+# grid_engine.py
+# ============================
+
 import math
+import config
 
-# ============================================================
-# AGGRESSIVE MULTI-LEVEL GRID
-# ============================================================
+GRID_LEVELS = config.GRID_LEVELS          # e.g. 14
+GRID_RANGE_PCT = config.GRID_RANGE_PCT    # e.g. 0.0065
 
-def get_grid_levels(price):
+
+def check_grid_signal(price, balance):
     """
-    Build 10 micro-grid levels:
-    5 above and 5 below price
-    """
-    rng = config.GRID_RANGE_PCT  # example: 0.0065
-    center = price
-
-    levels = []
-    for i in range(1, 6):  # 5 up, 5 down
-        up = center * (1 + rng * i)
-        dn = center * (1 - rng * i)
-        levels.append(up)
-        levels.append(dn)
-
-    return sorted(levels)
-
-
-def check_grid_signal(pair, price, balance):
-    """
-    Determine if price is outside nearest grid level
+    Determines whether to BUY, SELL, or HOLD
+    based on grid distribution and available balance.
     """
 
-    levels = get_grid_levels(price)
-    lower_levels = [lvl for lvl in levels if lvl < price]
-    upper_levels = [lvl for lvl in levels if lvl > price]
+    if price <= 0:
+        return "HOLD"
 
-    if not lower_levels or not upper_levels:
-        return "No grid actions"
+    # total capital allocation
+    total_allocation = (balance * config.MAX_CAPITAL_PCT) / 100
 
-    nearest_lower = max(lower_levels)
-    nearest_upper = min(upper_levels)
+    if total_allocation <= 0:
+        return "HOLD"
 
-    # mean reversion trigger:
-    if price < nearest_lower:
-        return f"BUY {pair} — price {price} < grid {nearest_lower}"
+    # split allocation across grid levels
+    grid_unit = total_allocation / GRID_LEVELS
 
-    if price > nearest_upper:
-        return f"SELL {pair} — price {price} > grid {nearest_upper}"
+    # compute price bands
+    upper_px = price * (1 + GRID_RANGE_PCT)
+    lower_px = price * (1 - GRID_RANGE_PCT)
 
-    return "No grid actions"
+    # BUY if price is below lower band
+    if price < lower_px:
+        return {
+            "action": "BUY",
+            "amount": grid_unit,
+            "reason": f"Price dropped below grid lower band ({lower_px:.4f})"
+        }
 
+    # SELL if price is above upper band
+    if price > upper_px:
+        return {
+            "action": "SELL",
+            "amount": grid_unit,
+            "reason": f"Price exceeded grid upper band ({upper_px:.4f})"
+        }
 
-# ============================================================
-# LIVE EXECUTION
-# ============================================================
-
-def execute_if_needed(pair, price, balance):
-
-    if not config.LIVE_TRADING:
-        return "Simulation only"
-
-    signal = check_grid_signal(pair, price, balance)
-
-    if "BUY" in signal:
-        place_buy(pair, price, balance)
-
-    elif "SELL" in signal:
-        place_sell(pair, price, balance)
-
-
-def place_buy(pair, price, balance):
-    """
-    Aggressive BUY scalp:
-    - position size: balance × capital %
-    - SL: -0.35%
-    - TP: +0.35%
-    """
-
-    allocation = balance * (config.MAX_CAPITAL_PCT / 100)
-    qty = allocation / price
-
-    ex = bitget_api.get_exchange()
-
-    try:
-        order = ex.create_order(
-            symbol=pair,
-            type="market",
-            side="buy",
-            amount=qty,
-        )
-
-        print(f"[LIVE BUY] {pair} qty={qty} @ {price}")
-
-        # SL/TP levels
-        sl = price * 0.9965
-        tp = price * 1.0035
-
-        ex.create_order(
-            symbol=pair,
-            type="stop_market",
-            side="sell",
-            stopPrice=sl,
-        )
-
-        ex.create_order(
-            symbol=pair,
-            type="take_profit_market",
-            side="sell",
-            stopPrice=tp,
-        )
-
-    except Exception as e:
-        print(f"[LIVE BUY ERROR] {str(e)}")
-
-
-def place_sell(pair, price, balance):
-    """
-    Aggressive SELL scalp:
-    - position size: balance × capital %
-    - SL: +0.35%
-    - TP: -0.35%
-    """
-
-    allocation = balance * (config.MAX_CAPITAL_PCT / 100)
-    qty = allocation / price
-
-    ex = bitget_api.get_exchange()
-
-    try:
-        order = ex.create_order(
-            symbol=pair,
-            type="market",
-            side="sell",
-            amount=qty,
-        )
-
-        print(f"[LIVE SELL] {pair} qty={qty} @ {price}")
-
-        sl = price * 1.0035
-        tp = price * 0.9965
-
-        ex.create_order(
-            symbol=pair,
-            type="stop_market",
-            side="buy",
-            stopPrice=sl,
-        )
-
-        ex.create_order(
-            symbol=pair,
-            type="take_profit_market",
-            side="buy",
-            stopPrice=tp,
-        )
-
-    except Exception as e:
-        print(f"[LIVE SELL ERROR] {str(e)}")
+    # HOLD in neutral area
+    return {
+        "action": "HOLD",
+        "amount": 0,
+        "reason": "Price inside neutral grid"
+    }
 
