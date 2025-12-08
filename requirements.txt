@@ -1,7 +1,4 @@
+ccxt==4.3.89
 python-telegram-bot==20.3
-ccxt==3.1.20
 pandas
-numpy
-requests
-websockets
-pytz
+aiohttp
