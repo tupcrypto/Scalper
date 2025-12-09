@@ -1,9 +1,13 @@
 # ===========================
-# grid_engine.py  (FINAL SIMPLE)
+# grid_engine.py  (GRID BOT)
 # ===========================
 import asyncio
 import ccxt
 import config
+
+# in-memory grid state: pair -> center price
+GRID_STATE = {}
+
 
 # ---------------------------
 # EXCHANGE INSTANCE
@@ -21,10 +25,9 @@ def get_exchange():
 
 
 # ---------------------------
-# BALANCE (ASSUMED, NOT API)
+# BALANCE (ASSUMED)
 # ---------------------------
-async def get_balance(exchange) -> float:
-    # we simply trust the env balance
+def get_assumed_balance() -> float:
     return float(config.ASSUMED_BALANCE_USDT)
 
 
@@ -41,37 +44,59 @@ async def get_price(exchange, pair: str) -> float:
 
 
 # ---------------------------
-# GRID SIGNAL
+# GRID SIGNAL (PIONEX-STYLE)
 # ---------------------------
-def check_grid_signal(price: float, balance: float, aggressive: bool = True) -> str:
+def check_grid_signal(pair: str, price: float, balance: float) -> str:
+    """
+    Pseudo Pionex-style neutral grid:
+    - Each pair has a grid center.
+    - If price moves GRID_STEP_PCT above center → SHORT_ENTRY
+    - If price moves GRID_STEP_PCT below center → LONG_ENTRY
+    - After an entry, we shift center to current price.
+    """
+
+    price = float(price)
+    balance = float(balance)
+
     if price <= 0:
         return "NO DATA"
     if balance <= 0:
         return "NO BALANCE"
 
-    # band size
-    band = 0.003 if aggressive else 0.0015  # 0.3% vs 0.15%
-    upper = price * (1 + band)
-    lower = price * (1 - band)
+    step_pct = config.GRID_STEP_PCT
 
-    if lower < price < upper:
-        return "HOLD — Neutral zone"
+    # Initialize center if not present
+    if pair not in GRID_STATE:
+        GRID_STATE[pair] = price
+        return "INIT GRID — HOLD"
 
-    if price <= lower:
-        return f"BUY SIGNAL @ {price:.4f}"
+    center = GRID_STATE[pair]
+    upper = center * (1 + step_pct)
+    lower = center * (1 - step_pct)
 
+    # Price went up enough above center → SHORT
     if price >= upper:
-        return f"SELL SIGNAL @ {price:.4f}"
+        GRID_STATE[pair] = price  # shift grid center up
+        return f"SHORT_ENTRY @ {price:.4f}"
 
-    return "HOLD"
+    # Price went down enough below center → LONG
+    if price <= lower:
+        GRID_STATE[pair] = price  # shift grid center down
+        return f"LONG_ENTRY @ {price:.4f}"
+
+    # Inside band → no action
+    return "HOLD — Neutral zone"
 
 
 # ---------------------------
 # EXECUTE ORDER (if LIVE)
 # ---------------------------
-async def execute_order(exchange, pair: str, action: str, balance: float) -> str:
+async def execute_order(exchange, pair: str, signal: str, balance: float) -> str:
+    if "ENTRY" not in signal:
+        return "NO ENTRY"
+
     if not config.LIVE_TRADING:
-        return f"[SIMULATION] {action} — {pair}"
+        return f"[SIMULATION] {signal} — {pair}"
 
     if balance <= 0:
         return "NO BALANCE"
@@ -85,8 +110,10 @@ async def execute_order(exchange, pair: str, action: str, balance: float) -> str
     if price <= 0:
         return "BAD PRICE"
 
+    # futures contract size (approx coins, not notional)
     amount = usdt_to_use / price
-    side = "buy" if "BUY" in action else "sell"
+
+    side = "buy" if "LONG_ENTRY" in signal else "sell"
 
     try:
         order = await asyncio.to_thread(
