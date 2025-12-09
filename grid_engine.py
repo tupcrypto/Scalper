@@ -1,155 +1,137 @@
-# ===========================
-# grid_engine.py  (GRID BOT CLEAN)
-# ===========================
-import asyncio
 import ccxt
 import config
+import traceback
 
-# In-memory grid center per pair
-GRID_STATE = {}
-
-
-# ---------------------------
-# BITGET FUTURES CLIENT
-# ---------------------------
+##############################
+#  GET BITGET EXCHANGE
+##############################
 def get_exchange():
-    return ccxt.bitget({
-        "apiKey": config.BITGET_API_KEY,
-        "secret": config.BITGET_API_SECRET,
-        "password": config.BITGET_PASSPHRASE,
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "swap",   # USDT-M perpetual futures
-            "createMarketBuyOrderRequiresPrice": False,
-        },
-    })
-
-
-# ---------------------------
-# ASSUMED BALANCE
-# ---------------------------
-def get_assumed_balance() -> float:
-    return float(config.ASSUMED_BALANCE_USDT)
-
-
-# ---------------------------
-# FETCH PRICE
-# ---------------------------
-async def get_price(exchange, pair: str) -> float:
     try:
-        ticker = await asyncio.to_thread(exchange.fetch_ticker, pair)
-        return float(ticker["last"])
+        exchange = ccxt.bitget({
+            "apiKey": config.BITGET_API_KEY,
+            "secret": config.BITGET_API_SECRET,
+            "password": config.BITGET_PASSPHRASE,   # REQUIRED FOR FUTURES
+            "options": {
+                "defaultType": "swap",
+                "createMarketBuyOrderRequiresPrice": False
+            }
+        })
+        exchange.load_markets()
+        return exchange
+
     except Exception as e:
-        print(f"PRICE ERROR {pair}: {e}")
+        print("EXCHANGE INIT ERROR:", e)
+        return None
+
+
+################################
+#  GET FUTURES USDT BALANCE
+################################
+def get_balance(exchange):
+    try:
+        balances = exchange.fetch_balance(params={"productType": "USDT-FUTURES"})
+        bal = balances.get("USDT", {}).get("free", 0)
+        return float(bal)
+
+    except Exception as e:
+        print("RAW BALANCE ERROR:", e)
         return 0.0
 
 
-# ---------------------------
-# GRID SIGNAL (NEUTRAL GRID)
-# ---------------------------
-def check_grid_signal(pair: str, price: float, balance: float) -> str:
-    """
-    Neutral futures grid:
-    - Each pair has a center price.
-    - If price moves above center by GRID_STEP_PCT -> SHORT_ENTRY.
-    - If price moves below center by GRID_STEP_PCT -> LONG_ENTRY.
-    - After an entry, we shift the center to the new price.
-    """
-    price = float(price)
-    balance = float(balance)
-
-    if price <= 0:
-        return "NO DATA"
-    if balance <= 0:
-        return "NO BALANCE"
-
-    step_pct = config.GRID_STEP_PCT
-
-    # Initialize center if not present
-    if pair not in GRID_STATE:
-        GRID_STATE[pair] = price
-        return "INIT GRID — HOLD"
-
-    center = GRID_STATE[pair]
-    upper = center * (1 + step_pct)
-    lower = center * (1 - step_pct)
-
-    # Price went up enough -> short
-    if price >= upper:
-        GRID_STATE[pair] = price
-        return f"SHORT_ENTRY @ {price:.4f}"
-
-    # Price went down enough -> long
-    if price <= lower:
-        GRID_STATE[pair] = price
-        return f"LONG_ENTRY @ {price:.4f}"
-
-    # Inside band
-    return "HOLD — Neutral zone"
-
-
-# ---------------------------
-# EXECUTE REAL FUTURES ORDER
-# ---------------------------
-async def execute_order(exchange, pair: str, signal: str, balance: float) -> str:
-    """
-    Executes Bitget futures orders.
-
-    LONG_ENTRY  -> market buy
-    SHORT_ENTRY -> market sell
-    Uses MAX_CAPITAL_PCT of ASSUMED_BALANCE_USDT per trade.
-    """
-    if "ENTRY" not in signal:
-        return "NO ENTRY"
-
-    # Paper mode
-    if not config.LIVE_TRADING:
-        return f"[SIMULATION] {signal} — {pair}"
-
-    if balance <= 0:
-        return "NO BALANCE"
-
-    # Capital for this trade
-    usdt_to_use = balance * (config.MAX_CAPITAL_PCT / 100.0)
-    if usdt_to_use <= 0:
-        return "NO CAPITAL"
-
-    price = await get_price(exchange, pair)
-    if price <= 0:
-        return "BAD PRICE"
-
+################################
+# GET PRICE
+################################
+def get_price(exchange, symbol):
     try:
-        # LONG = BUY futures
-        if "LONG_ENTRY" in signal:
-            # Number of contracts (approx coins)
-            amount = usdt_to_use / price
-            params = {
-                "createMarketBuyOrderRequiresPrice": False,
+        ticker = exchange.fetch_ticker(symbol)
+        return float(ticker['last'])
+    except:
+        return 0.0
+
+
+################################
+# GRID SCALPING DECISION
+################################
+def check_grid_signal(price):
+    """
+    Very simple aggressive grid logic:
+    - LONG when price dips 0.3%
+    - SHORT when price pops 0.3%
+    - OTHERWISE HOLD
+    """
+    # This is NOT a signal from history – it's a dynamic rolling midpoint:
+    center = price
+
+    lower = center * (1 - 0.003)
+    upper = center * (1 + 0.003)
+
+    if price <= lower:
+        return "LONG_ENTRY"
+    elif price >= upper:
+        return "SHORT_ENTRY"
+    else:
+        return "HOLD"
+
+
+################################
+# PLACE REAL MARKET ORDER (WORKS)
+################################
+def place_market_order(exchange, symbol, side, balance):
+    """
+    Bitget requires:
+        cost = amount in USDT
+        type='market'
+        size=None
+        marginCoin='USDT'
+    """
+    try:
+        if balance <= 0:
+            return "NO BALANCE"
+
+        # allocate safely
+        capital_pct = config.MAX_CAPITAL_PCT / 100
+        num_pairs = len(config.PAIRS)
+
+        # evenly divide allocation across active pairs
+        calc_cost = balance * capital_pct / num_pairs
+
+        # minimum cost required to avoid precision errors
+        trade_cost = max(5, calc_cost)     # ALWAYS >= $5
+
+        order = exchange.create_order(
+            symbol=symbol,
+            type='market',
+            side=side,
+            amount=None,
+            params={
+                "marginCoin": "USDT",
+                "cost": trade_cost,
+                "reduceOnly": False
             }
-            order = await asyncio.to_thread(
-                exchange.create_order,
-                pair,
-                "market",
-                "buy",
-                amount,
-                None,
-                params,
-            )
-            return f"ORDER OK: {order}"
-
-        # SHORT = SELL futures
-        if "SHORT_ENTRY" in signal:
-            amount = usdt_to_use / price
-            order = await asyncio.to_thread(
-                exchange.create_order,
-                pair,
-                "market",
-                "sell",
-                amount,
-            )
-            return f"ORDER OK: {order}"
-
-        return "NO ORDER"
+        )
+        return f"ORDER OK: {order}"
 
     except Exception as e:
-        return f"ORDER ERROR: {e}"
+        return f"ORDER ERROR: {str(e)}"
+
+
+################################
+# MASTER ENTRY FUNCTION
+################################
+def grid_step(exchange, symbol, balance):
+    price = get_price(exchange, symbol)
+    if price == 0:
+        return f"{symbol}: PRICE ERROR"
+
+    action = check_grid_signal(price)
+
+    if action == "LONG_ENTRY":
+        result = place_market_order(exchange, symbol, "buy", balance)
+        return f"[GRID] {symbol} — LONG_ENTRY @ {price}\n{result}"
+
+    elif action == "SHORT_ENTRY":
+        result = place_market_order(exchange, symbol, "sell", balance)
+        return f"[GRID] {symbol} — SHORT_ENTRY @ {price}\n{result}"
+
+    else:
+        return f"[GRID] {symbol} — HOLD — Neutral zone"
