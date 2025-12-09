@@ -20,7 +20,7 @@ def get_exchange():
             "password": config.BITGET_PASSPHRASE,
             "enableRateLimit": True,
             "options": {
-                "defaultType": "swap",
+                "defaultType": "swap",  # MUST be futures
                 "createMarketBuyOrderRequiresPrice": False,
             },
         })
@@ -93,13 +93,13 @@ def check_grid_signal(symbol: str, price: float, balance: float) -> str:
 
 
 # ======================================================
-# ORDER EXECUTION — FIXED MIN SIZE PER PAIR
+# ORDER EXECUTION — FIXED MIN SIZE PER PAIR + STRING COST FIX
 # ======================================================
 def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
     """
     Uses cost-based market orders for Bitget futures.
-    LIVE_TRADING = 0 → only simulate
-    LIVE_TRADING = 1 → real trades
+    LIVE_TRADING = 0 → simulate only
+    LIVE_TRADING = 1 → real orders
     """
 
     # No entry action → skip
@@ -120,23 +120,23 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
     calc_usdt = balance * pct / num_pairs
 
     # =============================
-    # ⭐ FIX: PAIR-SPECIFIC MIN SIZE
+    # ⭐ PAIR-SPECIFIC MIN SIZING ⭐
     # =============================
-    # Because Bitget minimum cost per pair varies
-
     if symbol.startswith("SUI"):
-        min_cost = 1     # works for small alt futures
+        min_cost = 1
     elif symbol.startswith("ETH"):
         min_cost = 3
     else:
-        min_cost = 5     # safe minimum for BTC and majors
+        min_cost = 5  # safe minimum for BTC, majors
 
-    # Final trade sizing
     trade_cost = max(min_cost, calc_usdt)
 
     # =============================
-    # EXECUTE ORDER
+    # ⭐ ABSOLUTE FIX FOR BITGET ⭐
+    # Bitget expects cost AS STRING (not float)
     # =============================
+    cost_str = f"{trade_cost:.6f}"
+
     try:
         side = "buy" if "LONG_ENTRY" in signal else "sell"
 
@@ -144,10 +144,10 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
             symbol=symbol,
             type="market",
             side=side,
-            amount=None,               # we supply "cost" below
+            amount=None,               # We use cost instead of amount
             params={
                 "marginCoin": "USDT",
-                "cost": trade_cost,
+                "cost": cost_str,      # ⭐ FIXED — NO MORE ConversionSyntax
                 "reduceOnly": False,
             },
         )
@@ -156,4 +156,3 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
 
     except Exception as e:
         return f"ORDER ERROR: {e}"
-
