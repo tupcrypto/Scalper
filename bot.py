@@ -61,14 +61,12 @@ async def grid_loop(app):
                 price = await grid_engine.get_price(exchange, pair)
                 action = grid_engine.check_grid_signal(price, balance, aggressive=True)
 
-                # log to owner
                 if config.TELEGRAM_CHAT_ID:
                     await app.bot.send_message(
                         chat_id=config.TELEGRAM_CHAT_ID,
                         text=f"[GRID] {pair} — {action}"
                     )
 
-                # execute if live mode & actionable
                 if config.LIVE_TRADING and ("BUY" in action or "SELL" in action):
                     result = await grid_engine.execute_order(
                         exchange, pair, action, balance
@@ -86,7 +84,7 @@ async def grid_loop(app):
                     text=f"[GRID LOOP ERROR]\n{str(e)}"
                 )
 
-        await asyncio.sleep(30)  # 30 seconds between scans
+        await asyncio.sleep(30)
 
 
 # -------------------------------------------------------
@@ -118,7 +116,7 @@ async def stop(update, context):
 
 
 # -------------------------------------------------------
-# MAIN ENTRY (NO asyncio.run!)
+# MAIN ENTRY (BACKGROUND WORKER)
 # -------------------------------------------------------
 def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
