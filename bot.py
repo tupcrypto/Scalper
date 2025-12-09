@@ -1,6 +1,7 @@
-# ===========================
-# bot.py — CLEAN GRID BOT
-# ===========================
+# ======================================================
+# bot.py — CLEAN STABLE GRID BOT (BITGET)
+# ======================================================
+
 import logging
 import asyncio
 from telegram.ext import ApplicationBuilder, CommandHandler
@@ -8,28 +9,31 @@ from telegram.ext import ApplicationBuilder, CommandHandler
 import config
 import grid_engine
 
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s — %(levelname)s — %(message)s"
 )
 
-GRID_TASK = None  # background loop task
+GRID_TASK = None  # Background loop reference
 
 
-# -----------------------------
-# /scan COMMAND
-# -----------------------------
+# ======================================================
+# /scan COMMAND  — FIXED, NEVER AWAITS SYNC FUNCTIONS
+# ======================================================
 async def scan(update, context):
     try:
         ex = grid_engine.get_exchange()
-        balance = grid_engine.get_balance()
+        balance = grid_engine.get_balance()  # sync, returns float
 
-        resp = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n\n"
+        # no coroutine formatting, no .2f formatting
+        resp = f"SCAN DEBUG — BALANCE: {balance} USDT\n\n"
 
         for pair in config.PAIRS:
-            price = grid_engine.get_price(ex, pair)
+            price = grid_engine.get_price(ex, pair)  # sync float
+
             if price == 0:
-                resp += f"{pair}: ❌ price unavailable\n"
+                resp += f"{pair}: ❌ price unavailable\n\n"
                 continue
 
             signal = grid_engine.check_grid_signal(pair, price, balance)
@@ -43,9 +47,9 @@ async def scan(update, context):
         await update.message.reply_text(f"SCAN ERROR:\n{e}")
 
 
-# -----------------------------
-# BACKGROUND GRID LOOP
-# -----------------------------
+# ======================================================
+# GRID LOOP — NO AWAIT ON GRID ENGINE FUNCTIONS
+# ======================================================
 async def grid_loop(app):
     while True:
         try:
@@ -57,18 +61,21 @@ async def grid_loop(app):
                 signal = grid_engine.check_grid_signal(pair, price, balance)
 
                 msg = f"[GRID] {pair} — {signal}"
+
+                # send grid signal to Telegram
                 if config.TELEGRAM_CHAT_ID:
                     await app.bot.send_message(
                         chat_id=config.TELEGRAM_CHAT_ID,
                         text=msg
                     )
 
-                # try execute order
+                # try actual order (sync)
                 result = grid_engine.execute_order(ex, pair, signal, balance)
+
+                # only notify when actual order executed or simulated
                 if (
-                    config.LIVE_TRADING
+                    "ORDER" in result
                     and config.TELEGRAM_CHAT_ID
-                    and "ORDER" in result
                 ):
                     await app.bot.send_message(
                         chat_id=config.TELEGRAM_CHAT_ID,
@@ -82,17 +89,18 @@ async def grid_loop(app):
                     text=f"[GRID LOOP ERROR]\n{e}"
                 )
 
-        await asyncio.sleep(30)  # every 30 seconds
+        await asyncio.sleep(30)  # run cycle every 30 seconds
 
 
-# -----------------------------
+# ======================================================
 # /start COMMAND
-# -----------------------------
+# ======================================================
 async def start(update, context):
     global GRID_TASK
 
     await update.message.reply_text("BOT STARTED — PIONEX-STYLE NEUTRAL GRID")
 
+    # cancel existing loop
     if GRID_TASK:
         GRID_TASK.cancel()
 
@@ -100,9 +108,9 @@ async def start(update, context):
     GRID_TASK = asyncio.create_task(grid_loop(app))
 
 
-# -----------------------------
+# ======================================================
 # /stop COMMAND
-# -----------------------------
+# ======================================================
 async def stop(update, context):
     global GRID_TASK
 
@@ -113,9 +121,9 @@ async def stop(update, context):
     await update.message.reply_text("AUTO GRID LOOP STOPPED")
 
 
-# -----------------------------
-# MAIN ENTRY POINT
-# -----------------------------
+# ======================================================
+# MAIN ENTRY
+# ======================================================
 def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
