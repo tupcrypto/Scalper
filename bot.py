@@ -1,8 +1,12 @@
+# ===========================
+# bot.py  (FINAL)
+# ===========================
 import logging
+import asyncio
 from telegram.ext import ApplicationBuilder, CommandHandler
+
 import config
 import grid_engine
-import asyncio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,9 +16,9 @@ logging.basicConfig(
 GRID_TASK = None
 
 
-# =====================================================
-# SCAN COMMAND
-# =====================================================
+# -------------------------------------------------------
+# /scan COMMAND
+# -------------------------------------------------------
 async def scan(update, context):
     try:
         exchange = grid_engine.get_exchange()
@@ -43,9 +47,9 @@ async def scan(update, context):
         await update.message.reply_text(f"SCAN ERROR:\n{str(e)}")
 
 
-# =====================================================
-# AUTO LOOP
-# =====================================================
+# -------------------------------------------------------
+# GRID AUTO-LOOP
+# -------------------------------------------------------
 async def grid_loop(app):
     exchange = grid_engine.get_exchange()
 
@@ -57,28 +61,37 @@ async def grid_loop(app):
                 price = await grid_engine.get_price(exchange, pair)
                 action = grid_engine.check_grid_signal(price, balance, aggressive=True)
 
-                # notify owner
-                await app.bot.send_message(
-                    chat_id=config.TELEGRAM_CHAT_ID,
-                    text=f"[GRID] {pair} — {action}"
-                )
+                # log to owner
+                if config.TELEGRAM_CHAT_ID:
+                    await app.bot.send_message(
+                        chat_id=config.TELEGRAM_CHAT_ID,
+                        text=f"[GRID] {pair} — {action}"
+                    )
 
-                # execute if live mode
+                # execute if live mode & actionable
                 if config.LIVE_TRADING and ("BUY" in action or "SELL" in action):
-                    await grid_engine.execute_order(exchange, pair, action, balance)
+                    result = await grid_engine.execute_order(
+                        exchange, pair, action, balance
+                    )
+                    if config.TELEGRAM_CHAT_ID:
+                        await app.bot.send_message(
+                            chat_id=config.TELEGRAM_CHAT_ID,
+                            text=result
+                        )
 
         except Exception as e:
-            await app.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"[GRID LOOP ERROR]\n{str(e)}"
-            )
+            if config.TELEGRAM_CHAT_ID:
+                await app.bot.send_message(
+                    chat_id=config.TELEGRAM_CHAT_ID,
+                    text=f"[GRID LOOP ERROR]\n{str(e)}"
+                )
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(30)  # 30 seconds between scans
 
 
-# =====================================================
-# START
-# =====================================================
+# -------------------------------------------------------
+# /start COMMAND
+# -------------------------------------------------------
 async def start(update, context):
     global GRID_TASK
 
@@ -91,9 +104,9 @@ async def start(update, context):
     GRID_TASK = asyncio.create_task(grid_loop(app))
 
 
-# =====================================================
-# STOP
-# =====================================================
+# -------------------------------------------------------
+# /stop COMMAND
+# -------------------------------------------------------
 async def stop(update, context):
     global GRID_TASK
 
@@ -104,9 +117,9 @@ async def stop(update, context):
     await update.message.reply_text("AUTO LOOP STOPPED")
 
 
-# =====================================================
-# ENTRY POINT  ❗ IMPORTANT ❗
-# =====================================================
+# -------------------------------------------------------
+# MAIN ENTRY (NO asyncio.run!)
+# -------------------------------------------------------
 def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
@@ -114,9 +127,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
 
-    logging.info("BOT RUNNING — POLLING MODE")
-
-    # THIS LINE FIXES EVERYTHING — DO NOT MODIFY
+    logging.info("BOT RUNNING — POLLING MODE (BACKGROUND WORKER)")
     app.run_polling()
 
 
