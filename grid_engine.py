@@ -1,10 +1,14 @@
+# ===============================================
+# grid_engine.py  (DEBUG FUTURES BALANCE VERSION)
+# ===============================================
+
 import asyncio
 import ccxt
 import config
 
 
 # =====================================================
-# INIT EXCHANGE CONNECTION FOR BITGET FUTURES
+# INIT BITGET EXCHANGE (FUTURES MODE)
 # =====================================================
 def get_exchange():
     ex = ccxt.bitget({
@@ -13,45 +17,40 @@ def get_exchange():
         "password": config.BITGET_PASSPHRASE,
         "enableRateLimit": True,
         "options": {
-            "defaultType": "swap",         # 🚀 FORCE FUTURES MODE
-        }
+            "defaultType": "swap",     # ensure USDT-M perpetual futures
+        },
     })
     return ex
 
 
 # =====================================================
-# FETCH FUTURES BALANCE (USDT Perpetual)
+# DEBUG FUTURES BALANCE — SEND RAW JSON TO TELEGRAM
 # =====================================================
 async def get_balance(exchange) -> float:
     try:
-        # 🚀 ALWAYS FETCH BITGET FUTURES BALANCE
+        # FETCH FUTURES WALLET STRUCTURE
         bal = await asyncio.to_thread(
             exchange.fetch_balance,
             {"type": "swap"}
         )
 
-        # ---------------------------
-        # BITGET FUTURES PARSING FIX
-        # ---------------------------
-        # Correct location for USDT futures balance:
-        # bal["info"]["data"]["usdtVo"]["available"]
-        if "info" in bal:
-            data = bal["info"].get("data", {})
-            usdtVo = data.get("usdtVo", {})
-            available = usdtVo.get("available", None)
+        # -------------------------------------------------
+        # SEND ENTIRE RAW JSON TO TELEGRAM FOR ANALYSIS
+        # -------------------------------------------------
+        if config.TELEGRAM_CHAT_ID:
+            import json
+            debug_str = json.dumps(bal, indent=2)
 
-            if available is not None:
-                return float(available)
+            from telegram import Bot
+            bot = Bot(config.TELEGRAM_BOT_TOKEN)
 
-        # ---------------------------
-        # FALLBACK (rare cases)
-        # ---------------------------
-        if "USDT" in bal and isinstance(bal["USDT"], dict):
-            if "free" in bal["USDT"]:
-                return float(bal["USDT"]["free"])
-            if "total" in bal["USDT"]:
-                return float(bal["USDT"]["total"])
+            # Only send first 3800 chars (Telegram message limit)
+            await bot.send_message(
+                chat_id=config.TELEGRAM_CHAT_ID,
+                text=f"RAW FUTURES BALANCE:\n{debug_str[:3800]}"
+            )
 
+        # We temporarily return ZERO until we know correct key
         return 0.0
 
     except Exception as e:
@@ -60,28 +59,24 @@ async def get_balance(exchange) -> float:
 
 
 # =====================================================
-# FETCH PRICE (FUTURES)
+# PRICE FETCH
 # =====================================================
 async def get_price(exchange, pair: str) -> float:
     try:
         ticker = await asyncio.to_thread(exchange.fetch_ticker, pair)
         return float(ticker["last"])
-    except:
+    except Exception:
         return 0.0
 
 
 # =====================================================
-# AGGRESSIVE GRID DECISION LOGIC
+# SIMPLE SIGNAL LOGIC (PLACEHOLDER)
 # =====================================================
-def check_grid_signal(price, balance):
-    """
-    Returns: "LONG", "SHORT", "HOLD"
-    """
-
+def check_grid_signal(price, balance, aggressive=True):
     if balance <= 0:
-        return "HOLD"
+        return "NO BALANCE"
 
-    # --- AGGRESSIVE SAMPLE LOGIC ---
+    # Randomized placeholder — will be replaced after balance works
     import random
     r = random.random()
 
@@ -94,32 +89,34 @@ def check_grid_signal(price, balance):
 
 
 # =====================================================
-# EXECUTE ORDER (LIVE ONLY)
+# EXECUTE ORDER IF LIVE MODE
 # =====================================================
-async def execute_order(exchange, pair, signal, balance):
+async def execute_order(exchange, pair, action, balance):
     if not config.LIVE_TRADING:
-        print(f"[SIMULATION] {signal} — {pair}")
+        print(f"[SIMULATION] {action} — {pair}")
         return
 
     try:
-        # ⚠️ POSITION SIZE = % of capital
         qty = balance * (config.MAX_CAPITAL_PCT / 100)
-
         if qty <= 0:
-            print("NO CAPITAL AVAILABLE")
+            print("NO CAPITAL")
             return
 
-        if signal == "LONG":
+        if action == "LONG":
             await asyncio.to_thread(
-                exchange.create_market_buy_order, pair, qty
+                exchange.create_market_buy_order,
+                pair,
+                qty
             )
 
-        if signal == "SHORT":
+        if action == "SHORT":
             await asyncio.to_thread(
-                exchange.create_market_sell_order, pair, qty
+                exchange.create_market_sell_order,
+                pair,
+                qty
             )
 
-        print(f"[LIVE TRADE] {signal} — {pair} — qty={qty}")
+        print(f"[LIVE TRADE] {action} — {pair} — qty={qty}")
 
     except Exception as e:
-        print(f"[EXECUTION ERROR] {e}")
+        print(f"[ORDER ERROR] {e}")
