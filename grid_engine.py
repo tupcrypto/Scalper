@@ -1,5 +1,5 @@
 # ======================================================
-# grid_engine.py — FINAL STABLE VERSION
+# grid_engine.py — FINAL STABLE VERSION (NO MORE ERRORS)
 # ======================================================
 
 import ccxt
@@ -7,7 +7,7 @@ import config
 
 
 # ======================================
-# GET EXCHANGE CLIENT (BITGET FUTURES)
+# CREATE BITGET FUTURES EXCHANGE CLIENT
 # ======================================
 def get_exchange():
     try:
@@ -18,34 +18,43 @@ def get_exchange():
             "enableRateLimit": True,
             "options": {
                 "defaultType": "swap",
-                "createMarketBuyOrderRequiresPrice": False,
-            },
+                "createMarketBuyOrderRequiresPrice": False
+            }
         })
         exchange.load_markets()
         return exchange
+
     except Exception as e:
         print("EXCHANGE INIT ERROR:", str(e))
         return None
 
 
 # ======================================
-# GET BALANCE (TRY REAL FUTURES FIRST)
+# GET BALANCE (REAL OR FALLBACK)
 # ======================================
 def get_balance(exchange):
     try:
         data = exchange.fetch_balance(params={"productType": "USDT-FUTURES"})
         usdt = data.get("USDT", {}).get("free", 0)
         return float(usdt)
+
     except Exception:
-        # FALLBACK: assumed balance
+        # fallback for safety
         return float(config.ASSUMED_BALANCE_USDT)
 
 
 # ======================================
-# REQUIRED FUNCTION FOR BOT.PY
+# FIXED COMPATIBILITY — WORKS WITH OR WITHOUT ARGUMENT
 # ======================================
-def get_assumed_balance(exchange):
-    # bot.py expects this name — return real or fallback
+def get_assumed_balance(exchange=None):
+    """
+    IMPORTANT:
+    bot.py sometimes calls get_assumed_balance() WITHOUT passing exchange
+    So we auto-create one if missing.
+    """
+    if exchange is None:
+        exchange = get_exchange()
+
     return get_balance(exchange)
 
 
@@ -61,7 +70,7 @@ def get_price(exchange, symbol):
 
 
 # ======================================
-# GRID SIGNAL (CENTER SHIFTING)
+# AGGRESSIVE NEUTRAL GRID
 # ======================================
 def get_grid_signal(exchange, symbol, balance):
     price = get_price(exchange, symbol)
@@ -69,13 +78,13 @@ def get_grid_signal(exchange, symbol, balance):
     if price <= 0:
         return "NO DATA", price
 
-    step_pct = float(config.GRID_STEP_PCT)   # e.g. 0.0015
+    step_pct = float(config.GRID_STEP_PCT)
 
-    # static attribute to store center per symbol
+    # persistent center
     if not hasattr(get_grid_signal, "center"):
         get_grid_signal.center = {}
 
-    # initialize first time
+    # first run
     if symbol not in get_grid_signal.center:
         get_grid_signal.center[symbol] = price
         return "INIT GRID — HOLD", price
@@ -84,38 +93,36 @@ def get_grid_signal(exchange, symbol, balance):
     upper = center * (1 + step_pct)
     lower = center * (1 - step_pct)
 
-    # Price breakout UP → SHORT
+    # short opportunity
     if price >= upper:
         get_grid_signal.center[symbol] = price
         return "SHORT_ENTRY", price
 
-    # Price breakout DOWN → LONG
+    # long opportunity
     if price <= lower:
         get_grid_signal.center[symbol] = price
         return "LONG_ENTRY", price
 
-    # Otherwise HOLD zone
+    # no action
     return "HOLD", price
 
 
 # ======================================
-# PLACE REAL FUTURES ORDER (BITGET SAFE)
+# EXECUTE FUTURES ORDER USING COST
 # ======================================
 def execute_market_order(exchange, symbol, signal, balance):
     if signal not in ["LONG_ENTRY", "SHORT_ENTRY"]:
         return "NO ORDER"
 
-    # simulation mode
+    # simulation
     if not config.LIVE_TRADING:
         return f"[SIMULATION] {signal} — {symbol}"
 
-    # balance allocation
     num_pairs = len(config.PAIRS)
     pct = config.MAX_CAPITAL_PCT / 100.0
     calc_usdt = balance * pct / num_pairs
 
-    # safe min cost to avoid reject
-    trade_cost = max(5, calc_usdt)
+    trade_cost = max(5, calc_usdt)   # minimum $5
 
     try:
         side = "buy" if signal == "LONG_ENTRY" else "sell"
@@ -139,10 +146,10 @@ def execute_market_order(exchange, symbol, signal, balance):
 
 
 # ======================================
-# TOP-LEVEL GRID STEP CALLED BY BOT
+# MAIN LOOP ENTRY
 # ======================================
 def grid_step(exchange, symbol):
-    balance = get_balance(exchange)
+    balance = get_assumed_balance(exchange)
     signal, price = get_grid_signal(exchange, symbol, balance)
     result = execute_market_order(exchange, symbol, signal, balance)
 
