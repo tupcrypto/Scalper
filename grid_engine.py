@@ -1,10 +1,8 @@
 # ======================================================
-# grid_engine.py — FINAL FIX FOR BITGET
-# (NO ConversionSyntax, NO format errors, NO 40808)
+# grid_engine.py — FINAL & STABLE BITGET EXECUTION
 # ======================================================
 
 import ccxt
-import math
 import config
 
 GRID_CENTER = {}
@@ -83,7 +81,7 @@ def check_grid_signal(symbol, price, balance):
 
 
 # ======================================================
-# ORDER EXECUTION
+# ORDER EXECUTION (NO DECIMAL, NO PRECISION MATH)
 # ======================================================
 def execute_order(exchange, symbol, signal, balance):
     if "ENTRY" not in signal:
@@ -96,9 +94,9 @@ def execute_order(exchange, symbol, signal, balance):
     if price <= 0:
         return "BAD PRICE"
 
-    # ---------------------------------------------
-    # MIN COST
-    # ---------------------------------------------
+    # --------------------------
+    # MIN NOTIONAL PER PAIR
+    # --------------------------
     if symbol.startswith("SUI"):
         min_cost_usdt = 5.5
     elif symbol.startswith("BTC"):
@@ -106,33 +104,18 @@ def execute_order(exchange, symbol, signal, balance):
     else:
         min_cost_usdt = 10.0
 
-    # =========================================
-    # RAW SIZE = cost / price
-    # =========================================
+    # --------------------------
+    # SIZE CALCULATION
+    # --------------------------
     raw_size = min_cost_usdt / price
 
-    # =========================================
-    # DETERMINE DECIMAL PRECISION
-    # =========================================
-    try:
-        market = exchange.market(symbol)
-        precision_val = market.get("precision", {}).get("amount", 0.0001)
+    # ⭐ ULTIMATE FIX ⭐
+    # Convert raw float directly to string — NO Decimal formatting at all
+    size = str(raw_size)
 
-        # convert precision into INT digits
-        # E.g. precision_val = 0.01 → digits = 2
-        digits = abs(int(math.log10(precision_val)))
-    except:
-        digits = 6
-
-    # =========================================
-    # FIXED SIZE NUMBER → STRING FORMAT
-    # =========================================
-    size_num = round(raw_size, digits)
-    size = format(size_num, f".{digits}f")  # safe formatted string
-
-    # ---------------------------------------------
+    # --------------------------
     # LEVERAGE
-    # ---------------------------------------------
+    # --------------------------
     try:
         exchange.set_leverage(
             leverage=5,
@@ -142,9 +125,9 @@ def execute_order(exchange, symbol, signal, balance):
     except Exception as e:
         print(f"SET LEVERAGE ERROR {symbol}: {e}")
 
-    # ---------------------------------------------
+    # --------------------------
     # ISOLATED MARGIN
-    # ---------------------------------------------
+    # --------------------------
     try:
         exchange.set_margin_mode(
             marginMode="isolated",
@@ -154,9 +137,9 @@ def execute_order(exchange, symbol, signal, balance):
     except Exception as e:
         print(f"SET MARGIN MODE ERROR {symbol}: {e}")
 
-    # ---------------------------------------------
-    # MARKET ORDER (SIZE AS STRING)
-    # ---------------------------------------------
+    # --------------------------
+    # MARKET ORDER
+    # --------------------------
     try:
         side = "buy" if "LONG_ENTRY" in signal else "sell"
 
@@ -167,15 +150,14 @@ def execute_order(exchange, symbol, signal, balance):
             amount=None,
             price=None,
             params={
-                "size": size,   # ⭐ MUST BE STRING
+                "size": size,
                 "force": "normal",
                 "marginCoin": "USDT",
             },
         )
 
         return (
-            f"ORDER OK: {symbol}, size={size}, "
-            f"price≈{price}, notional≈{min_cost_usdt}, order={order}"
+            f"ORDER OK: {symbol}, size={size}, notional≈{min_cost_usdt}, price≈{price}, order={order}"
         )
 
     except Exception as e:
