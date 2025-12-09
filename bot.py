@@ -1,5 +1,5 @@
 # ======================================================
-# bot.py — FINAL CLEAN SCALPER BOT
+# bot.py — FINAL FIXED VERSION FOR RENDER
 # ======================================================
 
 import asyncio
@@ -36,11 +36,11 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for sym in config.PAIRS:
             px = grid_engine.get_price(exchange, sym)
             out = out + sym + ": price=" + str(px) + "\n"
-
             sig = grid_engine.check_grid_signal(sym, px, bal)
             out = out + sym + ": " + sig + "\n\n"
 
         await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=out)
+
     except Exception as e:
         await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="SCAN ERROR: " + str(e))
 
@@ -50,23 +50,33 @@ async def grid_loop(app):
     exchange = grid_engine.get_exchange()
 
     while True:
-        if RUN_FLAG:
-            bal = grid_engine.get_balance()
-            for sym in config.PAIRS:
-                try:
+        try:
+            if RUN_FLAG:
+                bal = grid_engine.get_balance()
+
+                for sym in config.PAIRS:
                     px = grid_engine.get_price(exchange, sym)
                     sig = grid_engine.check_grid_signal(sym, px, bal)
 
-                    msg = "[GRID] " + sym + " — " + sig
-                    await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=msg)
+                    await app.bot.send_message(
+                        chat_id=config.TELEGRAM_CHAT_ID,
+                        text="[GRID] " + sym + " — " + sig
+                    )
 
                     out = grid_engine.execute_order(exchange, sym, sig, bal)
-                    await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=out)
 
-                except Exception as ex:
-                    await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="GRID LOOP ERROR: " + str(ex))
+                    await app.bot.send_message(
+                        chat_id=config.TELEGRAM_CHAT_ID,
+                        text=out
+                    )
 
-        await asyncio.sleep(120)  # 2 min
+        except Exception as ex:
+            await app.bot.send_message(
+                chat_id=config.TELEGRAM_CHAT_ID,
+                text="[GRID LOOP ERROR] " + str(ex)
+            )
+
+        await asyncio.sleep(120)
 
 
 async def main():
@@ -76,10 +86,18 @@ async def main():
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("scan", cmd_scan))
 
+    # CREATE GRID BACKGROUND LOOP
     asyncio.create_task(grid_loop(app))
 
-    await app.run_polling()
+    # NEVER close event loop — KEEP RUNNING FOREVER
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    # Keep alive forever
+    await asyncio.Future()
 
 
+# IMPORTANT — RUN COROUTINE CORRECTLY
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.get_event_loop().run_until_complete(main())
