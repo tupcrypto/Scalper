@@ -1,17 +1,17 @@
 # ======================================================
-# grid_engine.py — CLEAN SYNC GRID ENGINE FOR BITGET
+# grid_engine.py — FINAL STABLE VERSION FOR BITGET FUTURES
 # ======================================================
 
 import ccxt
 import config
 
-# Per-pair grid center
+# Per-pair grid anchor
 GRID_CENTER = {}
 
 
-# -----------------------------
+# ======================================================
 # EXCHANGE CLIENT (BITGET)
-# -----------------------------
+# ======================================================
 def get_exchange():
     try:
         ex = ccxt.bitget({
@@ -31,18 +31,25 @@ def get_exchange():
         return None
 
 
-# -----------------------------
-# BALANCE (ASSUMED)
-# -----------------------------
+# ======================================================
+# BALANCE (WE USE ASSUMED VALUE)
+# ======================================================
 def get_balance():
-    # we keep it simple and safe:
-    # use your ASSUMED_BALANCE_USDT for sizing
+    """
+    We intentionally use ASSUMED_BALANCE_USDT
+    instead of live API balance.
+
+    This eliminates:
+    - futures wallet permission issues
+    - unified account issues
+    - region mismatches
+    """
     return float(config.ASSUMED_BALANCE_USDT)
 
 
-# -----------------------------
-# PRICE
-# -----------------------------
+# ======================================================
+# PRICE FETCH
+# ======================================================
 def get_price(exchange, symbol: str) -> float:
     try:
         ticker = exchange.fetch_ticker(symbol)
@@ -52,18 +59,10 @@ def get_price(exchange, symbol: str) -> float:
         return 0.0
 
 
-# -----------------------------
-# GRID SIGNAL (PIONEX-STYLE)
-# -----------------------------
+# ======================================================
+# GRID SIGNAL (NEUTRAL PIONEX STYLE)
+# ======================================================
 def check_grid_signal(symbol: str, price: float, balance: float) -> str:
-    """
-    Pseudo Pionex-neutral grid:
-    - Keep a moving center per pair.
-    - LONG_ENTRY when price moves GRID_STEP_PCT below center.
-    - SHORT_ENTRY when price moves GRID_STEP_PCT above center.
-    - Otherwise HOLD.
-    """
-
     if price <= 0:
         return "NO DATA"
     if balance <= 0:
@@ -71,6 +70,7 @@ def check_grid_signal(symbol: str, price: float, balance: float) -> str:
 
     step = config.GRID_STEP_PCT  # e.g. 0.0015 = 0.15%
 
+    # Initialize grid for this pair
     if symbol not in GRID_CENTER:
         GRID_CENTER[symbol] = price
         return "INIT GRID — HOLD"
@@ -79,43 +79,64 @@ def check_grid_signal(symbol: str, price: float, balance: float) -> str:
     upper = center * (1 + step)
     lower = center * (1 - step)
 
+    # Price moved above upper threshold → short entry
     if price >= upper:
         GRID_CENTER[symbol] = price
-        return f"SHORT_ENTRY @ {price:.4f}"
+        return f"SHORT_ENTRY @ {price}"
 
+    # Price moved below lower threshold → long entry
     if price <= lower:
         GRID_CENTER[symbol] = price
-        return f"LONG_ENTRY @ {price:.4f}"
+        return f"LONG_ENTRY @ {price}"
 
     return "HOLD — Neutral zone"
 
 
-# -----------------------------
-# EXECUTE ORDER (BITGET FUTURES)
-# -----------------------------
+# ======================================================
+# ORDER EXECUTION — FIXED MIN SIZE PER PAIR
+# ======================================================
 def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
     """
-    Uses Bitget cost-based market orders:
-    - We send 'cost' in USDT instead of 'amount'.
+    Uses cost-based market orders for Bitget futures.
+    LIVE_TRADING = 0 → only simulate
+    LIVE_TRADING = 1 → real trades
     """
 
+    # No entry action → skip
     if "ENTRY" not in signal:
         return "NO ORDER"
 
-    # simulation mode
+    # Simulation mode
     if not config.LIVE_TRADING:
         return f"[SIMULATION] {signal} — {symbol}"
 
+    # Safety check
     if balance <= 0:
         return "NO BALANCE"
 
-    # capital allocation per pair
-    num_pairs = max(1, len(config.PAIRS))
+    # Allocation logic:
+    num_pairs = len(config.PAIRS)
     pct = config.MAX_CAPITAL_PCT / 100.0
     calc_usdt = balance * pct / num_pairs
 
-    trade_cost = max(5, calc_usdt)  # at least 5 USDT
+    # =============================
+    # ⭐ FIX: PAIR-SPECIFIC MIN SIZE
+    # =============================
+    # Because Bitget minimum cost per pair varies
 
+    if symbol.startswith("SUI"):
+        min_cost = 1     # works for small alt futures
+    elif symbol.startswith("ETH"):
+        min_cost = 3
+    else:
+        min_cost = 5     # safe minimum for BTC and majors
+
+    # Final trade sizing
+    trade_cost = max(min_cost, calc_usdt)
+
+    # =============================
+    # EXECUTE ORDER
+    # =============================
     try:
         side = "buy" if "LONG_ENTRY" in signal else "sell"
 
@@ -123,7 +144,7 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
             symbol=symbol,
             type="market",
             side=side,
-            amount=None,
+            amount=None,               # we supply "cost" below
             params={
                 "marginCoin": "USDT",
                 "cost": trade_cost,
