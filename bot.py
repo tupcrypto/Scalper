@@ -1,139 +1,85 @@
 # ======================================================
-# bot.py — CLEAN STABLE GRID BOT (BITGET)
+# bot.py — FINAL CLEAN SCALPER BOT
 # ======================================================
 
-import logging
 import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler
-
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import config
 import grid_engine
 
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s — %(levelname)s — %(message)s"
-)
-
-GRID_TASK = None  # Background loop reference
+RUN_FLAG = False
 
 
-# ======================================================
-# /scan COMMAND  — FIXED, NEVER AWAITS SYNC FUNCTIONS
-# ======================================================
-async def scan(update, context):
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global RUN_FLAG
+    RUN_FLAG = True
+    await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="BOT STARTED — GRID MODE ACTIVE")
+
+
+async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global RUN_FLAG
+    RUN_FLAG = False
+    await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="BOT STOPPED")
+
+
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        ex = grid_engine.get_exchange()
-        balance = grid_engine.get_balance()  # sync, returns float
+        exchange = grid_engine.get_exchange()
+        if exchange is None:
+            await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="SCAN ERROR — EXCHANGE INIT FAILED")
+            return
 
-        # no coroutine formatting, no .2f formatting
-        resp = f"SCAN DEBUG — BALANCE: {balance} USDT\n\n"
+        bal = grid_engine.get_balance()
+        out = "SCAN DEBUG — BALANCE: " + str(bal) + " USDT\n\n"
 
-        for pair in config.PAIRS:
-            price = grid_engine.get_price(ex, pair)  # sync float
+        for sym in config.PAIRS:
+            px = grid_engine.get_price(exchange, sym)
+            out = out + sym + ": price=" + str(px) + "\n"
 
-            if price == 0:
-                resp += f"{pair}: ❌ price unavailable\n\n"
-                continue
+            sig = grid_engine.check_grid_signal(sym, px, bal)
+            out = out + sym + ": " + sig + "\n\n"
 
-            signal = grid_engine.check_grid_signal(pair, price, balance)
-
-            resp += f"{pair}: price={price}\n"
-            resp += f"{pair}: {signal}\n\n"
-
-        await update.message.reply_text(resp)
-
+        await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=out)
     except Exception as e:
-        await update.message.reply_text(f"SCAN ERROR:\n{e}")
+        await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="SCAN ERROR: " + str(e))
 
 
-# ======================================================
-# GRID LOOP — NO AWAIT ON GRID ENGINE FUNCTIONS
-# ======================================================
 async def grid_loop(app):
+    global RUN_FLAG
+    exchange = grid_engine.get_exchange()
+
     while True:
-        try:
-            ex = grid_engine.get_exchange()
-            balance = grid_engine.get_balance()
+        if RUN_FLAG:
+            bal = grid_engine.get_balance()
+            for sym in config.PAIRS:
+                try:
+                    px = grid_engine.get_price(exchange, sym)
+                    sig = grid_engine.check_grid_signal(sym, px, bal)
 
-            for pair in config.PAIRS:
-                price = grid_engine.get_price(ex, pair)
-                signal = grid_engine.check_grid_signal(pair, price, balance)
+                    msg = "[GRID] " + sym + " — " + sig
+                    await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=msg)
 
-                msg = f"[GRID] {pair} — {signal}"
+                    out = grid_engine.execute_order(exchange, sym, sig, bal)
+                    await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=out)
 
-                # send grid signal to Telegram
-                if config.TELEGRAM_CHAT_ID:
-                    await app.bot.send_message(
-                        chat_id=config.TELEGRAM_CHAT_ID,
-                        text=msg
-                    )
+                except Exception as ex:
+                    await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="GRID LOOP ERROR: " + str(ex))
 
-                # try actual order (sync)
-                result = grid_engine.execute_order(ex, pair, signal, balance)
-
-                # only notify when actual order executed or simulated
-                if (
-                    "ORDER" in result
-                    and config.TELEGRAM_CHAT_ID
-                ):
-                    await app.bot.send_message(
-                        chat_id=config.TELEGRAM_CHAT_ID,
-                        text=result
-                    )
-
-        except Exception as e:
-            if config.TELEGRAM_CHAT_ID:
-                await app.bot.send_message(
-                    chat_id=config.TELEGRAM_CHAT_ID,
-                    text=f"[GRID LOOP ERROR]\n{e}"
-                )
-
-        await asyncio.sleep(30)  # run cycle every 30 seconds
+        await asyncio.sleep(120)  # 2 min
 
 
-# ======================================================
-# /start COMMAND
-# ======================================================
-async def start(update, context):
-    global GRID_TASK
-
-    await update.message.reply_text("BOT STARTED — PIONEX-STYLE NEUTRAL GRID")
-
-    # cancel existing loop
-    if GRID_TASK:
-        GRID_TASK.cancel()
-
-    app = context.application
-    GRID_TASK = asyncio.create_task(grid_loop(app))
-
-
-# ======================================================
-# /stop COMMAND
-# ======================================================
-async def stop(update, context):
-    global GRID_TASK
-
-    if GRID_TASK:
-        GRID_TASK.cancel()
-        GRID_TASK = None
-
-    await update.message.reply_text("AUTO GRID LOOP STOPPED")
-
-
-# ======================================================
-# MAIN ENTRY
-# ======================================================
-def main():
+async def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("scan", scan))
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("stop", cmd_stop))
+    app.add_handler(CommandHandler("scan", cmd_scan))
 
-    logging.info("BOT RUNNING — POLLING MODE (BACKGROUND WORKER)")
-    app.run_polling()
+    asyncio.create_task(grid_loop(app))
+
+    await app.run_polling()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
