@@ -1,6 +1,5 @@
 # ======================================================
-# grid_engine.py — FINAL REAL TRADE VERSION
-# With symbol-specific minimum cost
+# grid_engine.py — FINAL WORKING ORDER FIX VERSION
 # ======================================================
 
 import ccxt
@@ -10,7 +9,7 @@ GRID_CENTER = {}
 
 
 # ======================================================
-# BITGET FUTURES CLIENT
+# EXCHANGE CLIENT
 # ======================================================
 def get_exchange():
     try:
@@ -20,7 +19,7 @@ def get_exchange():
             "password": config.BITGET_PASSPHRASE,
             "enableRateLimit": True,
             "options": {
-                "defaultType": "swap",              # USDT-M futures / perpetual
+                "defaultType": "swap",              # USDT-M futures
                 "createMarketBuyOrderRequiresPrice": False,
             },
         })
@@ -32,7 +31,7 @@ def get_exchange():
 
 
 # ======================================================
-# ASSUMED BALANCE (NO API)
+# ASSUMED BALANCE
 # ======================================================
 def get_balance() -> float:
     return float(config.ASSUMED_BALANCE_USDT)
@@ -51,7 +50,7 @@ def get_price(exchange, symbol: str) -> float:
 
 
 # ======================================================
-# GRID SIGNAL (NEUTRAL)
+# GRID SIGNAL
 # ======================================================
 def check_grid_signal(symbol: str, price: float, balance: float) -> str:
     if price <= 0:
@@ -82,19 +81,9 @@ def check_grid_signal(symbol: str, price: float, balance: float) -> str:
 
 
 # ======================================================
-# ORDER EXECUTION — GUARANTEED FILL
+# ORDER EXECUTION — FIXED FOR 40808
 # ======================================================
 def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
-    """
-    CRITICAL RULE:
-        SUI min notional = 5.5 USDT
-        BTC min notional = 9.5 USDT
-        everything else → 10 USDT
-
-    isolated margin + 5x leverage
-    amount-based order
-    """
-
     if "ENTRY" not in signal:
         return "NO ORDER"
 
@@ -106,21 +95,32 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
         return "BAD PRICE"
 
     # ==============================================
-    # ⭐ SYMBOL-SPECIFIC MINIMUM COST
+    # PAIR-SPECIFIC MINIMUM NOTIONAL
     # ==============================================
     if symbol.startswith("SUI"):
         min_cost_usdt = 5.5
     elif symbol.startswith("BTC"):
         min_cost_usdt = 9.5
     else:
-        min_cost_usdt = 10.0  # safe default
-
-    # convert cost → amount
-    amount = min_cost_usdt / price
-    amount = float(f"{amount:.6f}")
+        min_cost_usdt = 10.0
 
     # ==============================================
-    # SET LEVERAGE 5x
+    # amount = cost / price
+    # ==============================================
+    raw_amount = min_cost_usdt / price
+
+    # ==============================================
+    # GET PRECISION FROM MARKET — **THE KEY FIX**
+    # ==============================================
+    try:
+        market = exchange.market(symbol)
+        precision = market.get("precision", {}).get("amount", 6)
+        amount = round(raw_amount, precision)
+    except:
+        amount = float(f"{raw_amount:.6f}")
+
+    # ==============================================
+    # SET LEVERAGE
     # ==============================================
     try:
         exchange.set_leverage(
@@ -132,7 +132,7 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
         print(f"SET LEVERAGE ERROR {symbol}: {e}")
 
     # ==============================================
-    # ISOLATED MODE — CRITICAL
+    # SET ISOLATED
     # ==============================================
     try:
         exchange.set_margin_mode(
@@ -144,7 +144,7 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
         print(f"SET MARGIN MODE ERROR {symbol}: {e}")
 
     # ==============================================
-    # PLACE MARKET ORDER — BY AMOUNT
+    # PLACE MARKET ORDER — **NO extra params**
     # ==============================================
     try:
         side = "buy" if "LONG_ENTRY" in signal else "sell"
@@ -153,14 +153,16 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
             symbol=symbol,
             type="market",
             side=side,
-            amount=amount,
-            params={
-                "marginCoin": "USDT",
-                "reduceOnly": False,
-            },
+            amount=amount
         )
 
-        return f"ORDER OK: symbol={symbol}, amount={amount}, cost≈{min_cost_usdt}, order={order}"
+        return (
+            f"ORDER OK: symbol={symbol}, "
+            f"amount={amount}, "
+            f"notional≈{min_cost_usdt}, "
+            f"price≈{price}, "
+            f"order={order}"
+        )
 
     except Exception as e:
         return f"ORDER ERROR: {e}"
