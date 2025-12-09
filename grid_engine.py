@@ -1,5 +1,5 @@
 # ======================================================
-# grid_engine.py — FINAL FIX FOR BITGET (size-based)
+# grid_engine.py — FINAL FIX FOR ConversionSyntax + Bitget FUTURES
 # ======================================================
 
 import ccxt
@@ -31,7 +31,7 @@ def get_exchange():
 
 
 # ======================================================
-# BALANCE (ASSUMED)
+# BALANCE
 # ======================================================
 def get_balance():
     return float(config.ASSUMED_BALANCE_USDT)
@@ -81,7 +81,7 @@ def check_grid_signal(symbol, price, balance):
 
 
 # ======================================================
-# ORDER EXECUTION (BITGET FUTURES USES **SIZE**, NOT AMOUNT**)
+# ORDER EXECUTION — FIXED: SIZE AS STRING
 # ======================================================
 def execute_order(exchange, symbol, signal, balance):
     if "ENTRY" not in signal:
@@ -95,7 +95,7 @@ def execute_order(exchange, symbol, signal, balance):
         return "BAD PRICE"
 
     # ---------------------------------------------
-    # Pair-specific notional minima
+    # Pair-specific min cost
     # ---------------------------------------------
     if symbol.startswith("SUI"):
         min_cost_usdt = 5.5
@@ -105,20 +105,24 @@ def execute_order(exchange, symbol, signal, balance):
         min_cost_usdt = 10.0
 
     # ---------------------------------------------
-    # size = cost / price (SIZE!!! not amount)
+    # SIZE CALCULATION
     # ---------------------------------------------
     raw_size = min_cost_usdt / price
 
-    # Proper rounding
+    # Proper rounding from market precision
     try:
         market = exchange.market(symbol)
         precision = market.get("precision", {}).get("amount", 6)
-        size = round(raw_size, precision)
+        size_num = round(raw_size, precision)
     except:
-        size = float(f"{raw_size:.6f}")
+        size_num = float(f"{raw_size:.6f}")
+
+    # ⭐ FINAL FIX:
+    # Bitget requires STRING, not Decimal/float
+    size = f"{size_num:.{precision}f}"  # safe formatting
 
     # ---------------------------------------------
-    # LEVERAGE
+    # SET LEVERAGE
     # ---------------------------------------------
     try:
         exchange.set_leverage(
@@ -130,7 +134,7 @@ def execute_order(exchange, symbol, signal, balance):
         print(f"SET LEVERAGE ERROR {symbol}: {e}")
 
     # ---------------------------------------------
-    # ISOLATED 
+    # ISOLATED
     # ---------------------------------------------
     try:
         exchange.set_margin_mode(
@@ -142,7 +146,7 @@ def execute_order(exchange, symbol, signal, balance):
         print(f"SET MARGIN MODE ERROR {symbol}: {e}")
 
     # ---------------------------------------------
-    # **THIS IS THE FINAL CORRECT ORDER FORMAT**
+    # MARKET ORDER (SIZE AS STRING!)
     # ---------------------------------------------
     try:
         side = "buy" if "LONG_ENTRY" in signal else "sell"
@@ -151,19 +155,20 @@ def execute_order(exchange, symbol, signal, balance):
             symbol=symbol,
             type="market",
             side=side,
-            amount=None,     # ignored
-            price=None,      # ignored
+            amount=None,
+            price=None,
             params={
-                "size": size,          # ⭐⭐ BITGET FUTURES REQUIRES THIS ⭐⭐
-                "force": "normal",     # default execution
+                "size": size,       # ⭐ MUST BE STRING
+                "force": "normal",
                 "marginCoin": "USDT",
             },
         )
 
         return (
-            f"ORDER OK: {symbol}, size={size}, notional≈{min_cost_usdt}, "
-            f"price≈{price}, order={order}"
+            f"ORDER OK: {symbol}, size={size}, "
+            f"notional≈{min_cost_usdt}, price≈{price}, order={order}"
         )
 
     except Exception as e:
         return f"ORDER ERROR: {e}"
+
