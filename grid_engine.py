@@ -1,8 +1,10 @@
 # ======================================================
-# grid_engine.py — FINAL FIX FOR ConversionSyntax + Bitget FUTURES
+# grid_engine.py — FINAL FIX FOR BITGET
+# (NO ConversionSyntax, NO format errors, NO 40808)
 # ======================================================
 
 import ccxt
+import math
 import config
 
 GRID_CENTER = {}
@@ -81,7 +83,7 @@ def check_grid_signal(symbol, price, balance):
 
 
 # ======================================================
-# ORDER EXECUTION — FIXED: SIZE AS STRING
+# ORDER EXECUTION
 # ======================================================
 def execute_order(exchange, symbol, signal, balance):
     if "ENTRY" not in signal:
@@ -95,7 +97,7 @@ def execute_order(exchange, symbol, signal, balance):
         return "BAD PRICE"
 
     # ---------------------------------------------
-    # Pair-specific min cost
+    # MIN COST
     # ---------------------------------------------
     if symbol.startswith("SUI"):
         min_cost_usdt = 5.5
@@ -104,25 +106,32 @@ def execute_order(exchange, symbol, signal, balance):
     else:
         min_cost_usdt = 10.0
 
-    # ---------------------------------------------
-    # SIZE CALCULATION
-    # ---------------------------------------------
+    # =========================================
+    # RAW SIZE = cost / price
+    # =========================================
     raw_size = min_cost_usdt / price
 
-    # Proper rounding from market precision
+    # =========================================
+    # DETERMINE DECIMAL PRECISION
+    # =========================================
     try:
         market = exchange.market(symbol)
-        precision = market.get("precision", {}).get("amount", 6)
-        size_num = round(raw_size, precision)
-    except:
-        size_num = float(f"{raw_size:.6f}")
+        precision_val = market.get("precision", {}).get("amount", 0.0001)
 
-    # ⭐ FINAL FIX:
-    # Bitget requires STRING, not Decimal/float
-    size = f"{size_num:.{precision}f}"  # safe formatting
+        # convert precision into INT digits
+        # E.g. precision_val = 0.01 → digits = 2
+        digits = abs(int(math.log10(precision_val)))
+    except:
+        digits = 6
+
+    # =========================================
+    # FIXED SIZE NUMBER → STRING FORMAT
+    # =========================================
+    size_num = round(raw_size, digits)
+    size = format(size_num, f".{digits}f")  # safe formatted string
 
     # ---------------------------------------------
-    # SET LEVERAGE
+    # LEVERAGE
     # ---------------------------------------------
     try:
         exchange.set_leverage(
@@ -134,7 +143,7 @@ def execute_order(exchange, symbol, signal, balance):
         print(f"SET LEVERAGE ERROR {symbol}: {e}")
 
     # ---------------------------------------------
-    # ISOLATED
+    # ISOLATED MARGIN
     # ---------------------------------------------
     try:
         exchange.set_margin_mode(
@@ -146,7 +155,7 @@ def execute_order(exchange, symbol, signal, balance):
         print(f"SET MARGIN MODE ERROR {symbol}: {e}")
 
     # ---------------------------------------------
-    # MARKET ORDER (SIZE AS STRING!)
+    # MARKET ORDER (SIZE AS STRING)
     # ---------------------------------------------
     try:
         side = "buy" if "LONG_ENTRY" in signal else "sell"
@@ -158,7 +167,7 @@ def execute_order(exchange, symbol, signal, balance):
             amount=None,
             price=None,
             params={
-                "size": size,       # ⭐ MUST BE STRING
+                "size": size,   # ⭐ MUST BE STRING
                 "force": "normal",
                 "marginCoin": "USDT",
             },
@@ -166,7 +175,7 @@ def execute_order(exchange, symbol, signal, balance):
 
         return (
             f"ORDER OK: {symbol}, size={size}, "
-            f"notional≈{min_cost_usdt}, price≈{price}, order={order}"
+            f"price≈{price}, notional≈{min_cost_usdt}, order={order}"
         )
 
     except Exception as e:
