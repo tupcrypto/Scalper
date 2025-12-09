@@ -1,5 +1,5 @@
 # ======================================================
-# grid_engine.py — FINAL & STABLE BITGET EXECUTION
+# grid_engine.py — FINAL FINAL FIX
 # ======================================================
 
 import ccxt
@@ -42,8 +42,8 @@ def get_balance():
 # ======================================================
 def get_price(exchange, symbol):
     try:
-        ticker = exchange.fetch_ticker(symbol)
-        return float(ticker["last"])
+        t = exchange.fetch_ticker(symbol)
+        return float(t["last"])
     except Exception as e:
         print(f"PRICE ERROR {symbol}: {e}")
         return 0.0
@@ -55,7 +55,6 @@ def get_price(exchange, symbol):
 def check_grid_signal(symbol, price, balance):
     if price <= 0:
         return "NO DATA"
-
     if balance <= 0:
         return "NO BALANCE"
 
@@ -81,7 +80,7 @@ def check_grid_signal(symbol, price, balance):
 
 
 # ======================================================
-# ORDER EXECUTION (NO DECIMAL, NO PRECISION MATH)
+# ORDER EXECUTION **NO SIZE, NO DECIMAL, NO PRECISION**
 # ======================================================
 def execute_order(exchange, symbol, signal, balance):
     if "ENTRY" not in signal:
@@ -95,7 +94,7 @@ def execute_order(exchange, symbol, signal, balance):
         return "BAD PRICE"
 
     # --------------------------
-    # MIN NOTIONAL PER PAIR
+    # MINIMUM NOTIONAL COST
     # --------------------------
     if symbol.startswith("SUI"):
         min_cost_usdt = 5.5
@@ -105,42 +104,30 @@ def execute_order(exchange, symbol, signal, balance):
         min_cost_usdt = 10.0
 
     # --------------------------
-    # SIZE CALCULATION
-    # --------------------------
-    raw_size = min_cost_usdt / price
-
-    # ⭐ ULTIMATE FIX ⭐
-    # Convert raw float directly to string — NO Decimal formatting at all
-    size = str(raw_size)
-
-    # --------------------------
-    # LEVERAGE
+    # TRY ENTRY WITH COST INSTEAD OF SIZE ⭐⭐⭐
     # --------------------------
     try:
-        exchange.set_leverage(
-            leverage=5,
-            symbol=symbol,
-            params={"marginCoin": "USDT"},
-        )
-    except Exception as e:
-        print(f"SET LEVERAGE ERROR {symbol}: {e}")
+        # Leverage
+        try:
+            exchange.set_leverage(
+                leverage=5,
+                symbol=symbol,
+                params={"marginCoin": "USDT"},
+            )
+        except:
+            pass
 
-    # --------------------------
-    # ISOLATED MARGIN
-    # --------------------------
-    try:
-        exchange.set_margin_mode(
-            marginMode="isolated",
-            symbol=symbol,
-            params={"marginCoin": "USDT"},
-        )
-    except Exception as e:
-        print(f"SET MARGIN MODE ERROR {symbol}: {e}")
+        # Isolated
+        try:
+            exchange.set_margin_mode(
+                marginMode="isolated",
+                symbol=symbol,
+                params={"marginCoin": "USDT"},
+            )
+        except:
+            pass
 
-    # --------------------------
-    # MARKET ORDER
-    # --------------------------
-    try:
+        # market order using COST (not SIZE!)
         side = "buy" if "LONG_ENTRY" in signal else "sell"
 
         order = exchange.create_order(
@@ -150,14 +137,14 @@ def execute_order(exchange, symbol, signal, balance):
             amount=None,
             price=None,
             params={
-                "size": size,
-                "force": "normal",
                 "marginCoin": "USDT",
+                "cost": min_cost_usdt,     # ⭐⭐ THE FIX ⭐⭐
+                "force": "normal",
             },
         )
 
         return (
-            f"ORDER OK: {symbol}, size={size}, notional≈{min_cost_usdt}, price≈{price}, order={order}"
+            f"ORDER OK: {symbol}, cost={min_cost_usdt}, price≈{price}, order={order}"
         )
 
     except Exception as e:
