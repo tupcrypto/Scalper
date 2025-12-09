@@ -1,32 +1,29 @@
 # =========================
-# config.py  (FULL FILE)
+# config.py  (FINAL)
 # =========================
-
 import os
 
-# -------------------------
-# TELEGRAM SETTINGS
-# -------------------------
+# ---------- TELEGRAM ----------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")  # optional push target
+# can be string; PTB accepts both, but we’ll keep it as string
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# -------------------------
-# BITGET API KEYS
-# -------------------------
+# ---------- BITGET API ----------
 BITGET_API_KEY        = os.getenv("BITGET_API_KEY", "")
 BITGET_API_SECRET     = os.getenv("BITGET_API_SECRET", "")
-BITGET_API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE", "")
+BITGET_PASSPHRASE     = os.getenv("BITGET_PASSPHRASE", "")  # this was missing
 
-# -------------------------
-# TRADING SETTINGS
-# -------------------------
+# ---------- TRADING SETTINGS ----------
 # Comma-separated list, e.g. "BTC/USDT,SUI/USDT"
 PAIRS_ENV = os.getenv("PAIRS", "BTC/USDT,SUI/USDT")
 PAIRS = [p.strip() for p in PAIRS_ENV.split(",") if p.strip()]
 
-MAX_CAPITAL_PCT = float(os.getenv("MAX_CAPITAL_PCT", "100"))   # % of futures balance to use
-GRID_LEVELS     = int(os.getenv("GRID_LEVELS", "14"))          # grid steps
-GRID_RANGE_PCT  = float(os.getenv("GRID_RANGE_PCT", "0.0065")) # 0.65% band
+# % of balance to use per scan (for order sizing)
+MAX_CAPITAL_PCT = float(os.getenv("MAX_CAPITAL_PCT", "100"))
 
-# Live trading flag: 1 = real orders, 0 = signals only
+# Aggressive grid or not
+AGGRESSIVE = os.getenv("AGGRESSIVE", "1") == "1"
+
+# Live mode – if 0, only sends signals, no real orders
 LIVE_TRADING = os.getenv("LIVE_TRADING", "0") == "1"
+
