@@ -57,16 +57,23 @@ async def grid_loop(app):
                 price = await grid_engine.get_price(exchange, pair)
                 signal = grid_engine.check_grid_signal(pair, price, balance)
 
-                # log signal
+                # broadcast grid signal
                 if config.TELEGRAM_CHAT_ID:
                     await app.bot.send_message(
                         chat_id=config.TELEGRAM_CHAT_ID,
                         text=f"[GRID] {pair} — {signal}"
                     )
 
-                # execute real orders if LIVE_TRADING=1
-                result = await grid_engine.execute_order(exchange, pair, signal, balance)
-                if config.LIVE_TRADING and config.TELEGRAM_CHAT_ID and "ORDER" in result:
+                # execute real trades if LIVE
+                result = await grid_engine.execute_order(
+                    exchange, pair, signal, balance
+                )
+
+                if (
+                    config.LIVE_TRADING
+                    and config.TELEGRAM_CHAT_ID
+                    and "ORDER" in result
+                ):
                     await app.bot.send_message(
                         chat_id=config.TELEGRAM_CHAT_ID,
                         text=result
@@ -79,7 +86,7 @@ async def grid_loop(app):
                     text=f"[GRID LOOP ERROR]\n{str(e)}"
                 )
 
-        await asyncio.sleep(30)  # scan every 30s
+        await asyncio.sleep(30)
 
 
 # -------------------------------------------------------
@@ -88,7 +95,7 @@ async def grid_loop(app):
 async def start(update, context):
     global GRID_TASK
 
-    await update.message.reply_text("BOT STARTED — PIONEX-STYLE GRID MODE")
+    await update.message.reply_text("BOT STARTED — PIONEX-STYLE NEUTRAL GRID")
 
     if GRID_TASK:
         GRID_TASK.cancel()
@@ -111,7 +118,7 @@ async def stop(update, context):
 
 
 # -------------------------------------------------------
-# MAIN ENTRY (BACKGROUND WORKER)
+# MAIN
 # -------------------------------------------------------
 def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
@@ -120,7 +127,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
 
-    logging.info("BOT RUNNING — POLLING MODE (BACKGROUND WORKER)")
+    logging.info("BOT RUNNING — POLLING MODE")
     app.run_polling()
 
 
