@@ -1,5 +1,5 @@
 # ===========================
-# bot.py  (GRID BOT)
+# bot.py — CLEAN GRID BOT
 # ===========================
 import logging
 import asyncio
@@ -13,21 +13,21 @@ logging.basicConfig(
     format="%(asctime)s — %(levelname)s — %(message)s"
 )
 
-GRID_TASK = None
+GRID_TASK = None  # background loop task
 
 
-# -------------------------------------------------------
+# -----------------------------
 # /scan COMMAND
-# -------------------------------------------------------
+# -----------------------------
 async def scan(update, context):
     try:
-        exchange = grid_engine.get_exchange()
-        balance = grid_engine.get_assumed_balance()
+        ex = grid_engine.get_exchange()
+        balance = grid_engine.get_balance()
 
         resp = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n\n"
 
         for pair in config.PAIRS:
-            price = await grid_engine.get_price(exchange, pair)
+            price = grid_engine.get_price(ex, pair)
             if price == 0:
                 resp += f"{pair}: ❌ price unavailable\n"
                 continue
@@ -40,35 +40,31 @@ async def scan(update, context):
         await update.message.reply_text(resp)
 
     except Exception as e:
-        await update.message.reply_text(f"SCAN ERROR:\n{str(e)}")
+        await update.message.reply_text(f"SCAN ERROR:\n{e}")
 
 
-# -------------------------------------------------------
-# GRID AUTO-LOOP
-# -------------------------------------------------------
+# -----------------------------
+# BACKGROUND GRID LOOP
+# -----------------------------
 async def grid_loop(app):
-    exchange = grid_engine.get_exchange()
-
     while True:
         try:
-            balance = grid_engine.get_assumed_balance()
+            ex = grid_engine.get_exchange()
+            balance = grid_engine.get_balance()
 
             for pair in config.PAIRS:
-                price = await grid_engine.get_price(exchange, pair)
+                price = grid_engine.get_price(ex, pair)
                 signal = grid_engine.check_grid_signal(pair, price, balance)
 
-                # broadcast grid signal
+                msg = f"[GRID] {pair} — {signal}"
                 if config.TELEGRAM_CHAT_ID:
                     await app.bot.send_message(
                         chat_id=config.TELEGRAM_CHAT_ID,
-                        text=f"[GRID] {pair} — {signal}"
+                        text=msg
                     )
 
-                # execute real trades if LIVE
-                result = await grid_engine.execute_order(
-                    exchange, pair, signal, balance
-                )
-
+                # try execute order
+                result = grid_engine.execute_order(ex, pair, signal, balance)
                 if (
                     config.LIVE_TRADING
                     and config.TELEGRAM_CHAT_ID
@@ -83,15 +79,15 @@ async def grid_loop(app):
             if config.TELEGRAM_CHAT_ID:
                 await app.bot.send_message(
                     chat_id=config.TELEGRAM_CHAT_ID,
-                    text=f"[GRID LOOP ERROR]\n{str(e)}"
+                    text=f"[GRID LOOP ERROR]\n{e}"
                 )
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(30)  # every 30 seconds
 
 
-# -------------------------------------------------------
+# -----------------------------
 # /start COMMAND
-# -------------------------------------------------------
+# -----------------------------
 async def start(update, context):
     global GRID_TASK
 
@@ -104,9 +100,9 @@ async def start(update, context):
     GRID_TASK = asyncio.create_task(grid_loop(app))
 
 
-# -------------------------------------------------------
+# -----------------------------
 # /stop COMMAND
-# -------------------------------------------------------
+# -----------------------------
 async def stop(update, context):
     global GRID_TASK
 
@@ -117,9 +113,9 @@ async def stop(update, context):
     await update.message.reply_text("AUTO GRID LOOP STOPPED")
 
 
-# -------------------------------------------------------
-# MAIN
-# -------------------------------------------------------
+# -----------------------------
+# MAIN ENTRY POINT
+# -----------------------------
 def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
@@ -127,7 +123,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
 
-    logging.info("BOT RUNNING — POLLING MODE")
+    logging.info("BOT RUNNING — POLLING MODE (BACKGROUND WORKER)")
     app.run_polling()
 
 
