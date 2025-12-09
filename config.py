@@ -1,5 +1,5 @@
 # =========================
-# config.py  (FINAL SIMPLE)
+# config.py  (GRID BOT)
 # =========================
 import os
 
@@ -17,16 +17,18 @@ BITGET_PASSPHRASE     = os.getenv("BITGET_PASSPHRASE", "")
 PAIRS_ENV = os.getenv("PAIRS", "BTC/USDT,SUI/USDT")
 PAIRS = [p.strip() for p in PAIRS_ENV.split(",") if p.strip()]
 
-# ⚠️ We stop fighting Bitget’s balance format.
-#    You tell the bot your balance manually here:
-ASSUMED_BALANCE_USDT = float(os.getenv("ASSUMED_BALANCE_USDT", "50"))
+# We use your assumed balance instead of the Bitget balance API
+ASSUMED_BALANCE_USDT = float(os.getenv("ASSUMED_BALANCE_USDT", "52"))
 
-# % of balance to use for trading (total exposure)
-MAX_CAPITAL_PCT = float(os.getenv("MAX_CAPITAL_PCT", "100"))
+# Max percentage of that balance the bot is allowed to use
+MAX_CAPITAL_PCT = float(os.getenv("MAX_CAPITAL_PCT", "50"))  # e.g. 50% of 52
 
-# Aggressive band behaviour
-AGGRESSIVE = os.getenv("AGGRESSIVE", "1") == "1"
+# Grid step in percent (e.g. 0.15% = 0.0015)
+GRID_STEP_PCT = float(os.getenv("GRID_STEP_PCT", "0.0015"))  # 0.15%
 
 # Live mode – if 0, only signals, no real orders
 LIVE_TRADING = os.getenv("LIVE_TRADING", "0") == "1"
+
+# For logging text: "AGGRESSIVE" or not
+AGGRESSIVE = True  # just a label now
 
