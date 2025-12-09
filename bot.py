@@ -1,5 +1,5 @@
 # ===========================
-# bot.py  (FINAL)
+# bot.py  (GRID BOT)
 # ===========================
 import logging
 import asyncio
@@ -22,7 +22,7 @@ GRID_TASK = None
 async def scan(update, context):
     try:
         exchange = grid_engine.get_exchange()
-        balance = await grid_engine.get_balance(exchange)
+        balance = grid_engine.get_assumed_balance()
 
         resp = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n\n"
 
@@ -32,14 +32,10 @@ async def scan(update, context):
                 resp += f"{pair}: ❌ price unavailable\n"
                 continue
 
-            action = grid_engine.check_grid_signal(
-                price,
-                balance,
-                aggressive=config.AGGRESSIVE
-            )
+            signal = grid_engine.check_grid_signal(pair, price, balance)
 
             resp += f"{pair}: price={price}\n"
-            resp += f"{pair}: {action}\n\n"
+            resp += f"{pair}: {signal}\n\n"
 
         await update.message.reply_text(resp)
 
@@ -55,27 +51,26 @@ async def grid_loop(app):
 
     while True:
         try:
-            balance = await grid_engine.get_balance(exchange)
+            balance = grid_engine.get_assumed_balance()
 
             for pair in config.PAIRS:
                 price = await grid_engine.get_price(exchange, pair)
-                action = grid_engine.check_grid_signal(price, balance, aggressive=True)
+                signal = grid_engine.check_grid_signal(pair, price, balance)
 
+                # log signal
                 if config.TELEGRAM_CHAT_ID:
                     await app.bot.send_message(
                         chat_id=config.TELEGRAM_CHAT_ID,
-                        text=f"[GRID] {pair} — {action}"
+                        text=f"[GRID] {pair} — {signal}"
                     )
 
-                if config.LIVE_TRADING and ("BUY" in action or "SELL" in action):
-                    result = await grid_engine.execute_order(
-                        exchange, pair, action, balance
+                # execute real orders if LIVE_TRADING=1
+                result = await grid_engine.execute_order(exchange, pair, signal, balance)
+                if config.LIVE_TRADING and config.TELEGRAM_CHAT_ID and "ORDER" in result:
+                    await app.bot.send_message(
+                        chat_id=config.TELEGRAM_CHAT_ID,
+                        text=result
                     )
-                    if config.TELEGRAM_CHAT_ID:
-                        await app.bot.send_message(
-                            chat_id=config.TELEGRAM_CHAT_ID,
-                            text=result
-                        )
 
         except Exception as e:
             if config.TELEGRAM_CHAT_ID:
@@ -84,7 +79,7 @@ async def grid_loop(app):
                     text=f"[GRID LOOP ERROR]\n{str(e)}"
                 )
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(30)  # scan every 30s
 
 
 # -------------------------------------------------------
@@ -93,7 +88,7 @@ async def grid_loop(app):
 async def start(update, context):
     global GRID_TASK
 
-    await update.message.reply_text("BOT STARTED — AGGRESSIVE MODE")
+    await update.message.reply_text("BOT STARTED — PIONEX-STYLE GRID MODE")
 
     if GRID_TASK:
         GRID_TASK.cancel()
@@ -112,7 +107,7 @@ async def stop(update, context):
         GRID_TASK.cancel()
         GRID_TASK = None
 
-    await update.message.reply_text("AUTO LOOP STOPPED")
+    await update.message.reply_text("AUTO GRID LOOP STOPPED")
 
 
 # -------------------------------------------------------
