@@ -1,38 +1,37 @@
 # ======================================================
-# grid_engine.py — FINAL FULL ASYNC COMPATIBLE VERSION
+# grid_engine.py — FINAL ASYNC COMPATIBLE BITGET GRID
 # ======================================================
 
 import ccxt
 import config
 
 
-# ======================================
+# ==============================
 # EXCHANGE CLIENT
-# ======================================
+# ==============================
 def get_exchange():
     try:
         exchange = ccxt.bitget({
             "apiKey": config.BITGET_API_KEY,
             "secret": config.BITGET_API_SECRET,
             "password": config.BITGET_PASSPHRASE,
+            "enableRateLimit": True,
             "options": {
                 "defaultType": "swap",
                 "createMarketBuyOrderRequiresPrice": False
-            },
-            "enableRateLimit": True
+            }
         })
         exchange.load_markets()
         return exchange
-
     except Exception as e:
         print("EXCHANGE INIT ERROR:", str(e))
         return None
 
 
-# ======================================
-# SYNC BALANCE READER
-# ======================================
-def get_balance(exchange):
+# ==============================
+# SYNC BALANCE
+# ==============================
+def _sync_balance(exchange):
     try:
         data = exchange.fetch_balance(params={"productType": "USDT-FUTURES"})
         usdt = data.get("USDT", {}).get("free", 0)
@@ -41,32 +40,19 @@ def get_balance(exchange):
         return float(config.ASSUMED_BALANCE_USDT)
 
 
-# ======================================
-# ASYNC BALANCE WRAPPER — BOT COMPATIBLE
-# ======================================
+# ==============================
+# ASYNC BALANCE (AWAIT SAFE)
+# ==============================
 async def get_assumed_balance(exchange=None):
-    """
-    bot.py may do:
-        await grid_engine.get_assumed_balance()
-
-    OR:
-
-        await grid_engine.get_assumed_balance(exchange)
-
-    So:
-      - exchange optional
-      - async compatible
-    """
     if exchange is None:
         exchange = get_exchange()
+    bal = _sync_balance(exchange)
+    return float(bal)
 
-    bal = get_balance(exchange)
-    return bal
 
-
-# ======================================
-# PRICE READER
-# ======================================
+# ==============================
+# SYNC PRICE
+# ==============================
 def get_price(exchange, symbol):
     try:
         ticker = exchange.fetch_ticker(symbol)
@@ -75,9 +61,9 @@ def get_price(exchange, symbol):
         return 0.0
 
 
-# ======================================
+# ==============================
 # AGGRESSIVE NEUTRAL GRID SIGNAL
-# ======================================
+# ==============================
 def get_grid_signal(exchange, symbol, balance):
     price = get_price(exchange, symbol)
 
@@ -108,13 +94,14 @@ def get_grid_signal(exchange, symbol, balance):
     return "HOLD", price
 
 
-# ======================================
-# SAFE FUTURES ORDER EXECUTION USING COST
-# ======================================
+# ==============================
+# SAFE FUTURES ORDER USING COST
+# ==============================
 def execute_market_order(exchange, symbol, signal, balance):
     if signal not in ["LONG_ENTRY", "SHORT_ENTRY"]:
         return "NO ORDER"
 
+    # simulation mode
     if not config.LIVE_TRADING:
         return f"[SIMULATION] {signal} — {symbol}"
 
@@ -129,7 +116,7 @@ def execute_market_order(exchange, symbol, signal, balance):
 
         order = exchange.create_order(
             symbol=symbol,
-            type='market',
+            type="market",
             side=side,
             amount=None,
             params={
@@ -138,20 +125,21 @@ def execute_market_order(exchange, symbol, signal, balance):
                 "reduceOnly": False
             }
         )
-
         return f"ORDER OK: {order}"
 
     except Exception as e:
         return f"ORDER ERROR: {str(e)}"
 
 
-# ======================================
-# MAIN GRID STEP FOR BOT LOOP (ASYNC SAFE)
-# ======================================
+# ==============================
+# ASYNC GRID STEP (AWAIT SAFE)
+# bot.py expects: await grid_step()
+# ==============================
 async def grid_step(exchange, symbol):
     balance = await get_assumed_balance(exchange)
     signal, price = get_grid_signal(exchange, symbol, balance)
     result = execute_market_order(exchange, symbol, signal, balance)
 
+    # return clean strings (NOT coroutines)
     return f"[GRID] {symbol} — {signal} @ {price}\n{result}"
 
