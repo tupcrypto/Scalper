@@ -1,118 +1,123 @@
 # ======================================================
-# grid_engine.py — FINAL ASYNC COMPATIBLE BITGET GRID
+# grid_engine.py — CLEAN SYNC GRID ENGINE FOR BITGET
 # ======================================================
 
 import ccxt
 import config
 
+# Per-pair grid center
+GRID_CENTER = {}
 
-# ==============================
-# EXCHANGE CLIENT
-# ==============================
+
+# -----------------------------
+# EXCHANGE CLIENT (BITGET)
+# -----------------------------
 def get_exchange():
     try:
-        exchange = ccxt.bitget({
+        ex = ccxt.bitget({
             "apiKey": config.BITGET_API_KEY,
             "secret": config.BITGET_API_SECRET,
             "password": config.BITGET_PASSPHRASE,
             "enableRateLimit": True,
             "options": {
                 "defaultType": "swap",
-                "createMarketBuyOrderRequiresPrice": False
-            }
+                "createMarketBuyOrderRequiresPrice": False,
+            },
         })
-        exchange.load_markets()
-        return exchange
+        ex.load_markets()
+        return ex
     except Exception as e:
-        print("EXCHANGE INIT ERROR:", str(e))
+        print("EXCHANGE INIT ERROR:", e)
         return None
 
 
-# ==============================
-# SYNC BALANCE
-# ==============================
-def _sync_balance(exchange):
-    try:
-        data = exchange.fetch_balance(params={"productType": "USDT-FUTURES"})
-        usdt = data.get("USDT", {}).get("free", 0)
-        return float(usdt)
-    except Exception:
-        return float(config.ASSUMED_BALANCE_USDT)
+# -----------------------------
+# BALANCE (ASSUMED)
+# -----------------------------
+def get_balance():
+    # we keep it simple and safe:
+    # use your ASSUMED_BALANCE_USDT for sizing
+    return float(config.ASSUMED_BALANCE_USDT)
 
 
-# ==============================
-# ASYNC BALANCE (AWAIT SAFE)
-# ==============================
-async def get_assumed_balance(exchange=None):
-    if exchange is None:
-        exchange = get_exchange()
-    bal = _sync_balance(exchange)
-    return float(bal)
-
-
-# ==============================
-# SYNC PRICE
-# ==============================
-def get_price(exchange, symbol):
+# -----------------------------
+# PRICE
+# -----------------------------
+def get_price(exchange, symbol: str) -> float:
     try:
         ticker = exchange.fetch_ticker(symbol)
         return float(ticker["last"])
-    except:
+    except Exception as e:
+        print(f"PRICE ERROR {symbol}: {e}")
         return 0.0
 
 
-# ==============================
-# AGGRESSIVE NEUTRAL GRID SIGNAL
-# ==============================
-def get_grid_signal(exchange, symbol, balance):
-    price = get_price(exchange, symbol)
+# -----------------------------
+# GRID SIGNAL (PIONEX-STYLE)
+# -----------------------------
+def check_grid_signal(symbol: str, price: float, balance: float) -> str:
+    """
+    Pseudo Pionex-neutral grid:
+    - Keep a moving center per pair.
+    - LONG_ENTRY when price moves GRID_STEP_PCT below center.
+    - SHORT_ENTRY when price moves GRID_STEP_PCT above center.
+    - Otherwise HOLD.
+    """
 
     if price <= 0:
-        return "NO DATA", price
+        return "NO DATA"
+    if balance <= 0:
+        return "NO BALANCE"
 
-    step_pct = float(config.GRID_STEP_PCT)
+    step = config.GRID_STEP_PCT  # e.g. 0.0015 = 0.15%
 
-    if not hasattr(get_grid_signal, "center"):
-        get_grid_signal.center = {}
+    if symbol not in GRID_CENTER:
+        GRID_CENTER[symbol] = price
+        return "INIT GRID — HOLD"
 
-    if symbol not in get_grid_signal.center:
-        get_grid_signal.center[symbol] = price
-        return "INIT GRID — HOLD", price
-
-    center = get_grid_signal.center[symbol]
-    upper = center * (1 + step_pct)
-    lower = center * (1 - step_pct)
+    center = GRID_CENTER[symbol]
+    upper = center * (1 + step)
+    lower = center * (1 - step)
 
     if price >= upper:
-        get_grid_signal.center[symbol] = price
-        return "SHORT_ENTRY", price
+        GRID_CENTER[symbol] = price
+        return f"SHORT_ENTRY @ {price:.4f}"
 
     if price <= lower:
-        get_grid_signal.center[symbol] = price
-        return "LONG_ENTRY", price
+        GRID_CENTER[symbol] = price
+        return f"LONG_ENTRY @ {price:.4f}"
 
-    return "HOLD", price
+    return "HOLD — Neutral zone"
 
 
-# ==============================
-# SAFE FUTURES ORDER USING COST
-# ==============================
-def execute_market_order(exchange, symbol, signal, balance):
-    if signal not in ["LONG_ENTRY", "SHORT_ENTRY"]:
+# -----------------------------
+# EXECUTE ORDER (BITGET FUTURES)
+# -----------------------------
+def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
+    """
+    Uses Bitget cost-based market orders:
+    - We send 'cost' in USDT instead of 'amount'.
+    """
+
+    if "ENTRY" not in signal:
         return "NO ORDER"
 
     # simulation mode
     if not config.LIVE_TRADING:
         return f"[SIMULATION] {signal} — {symbol}"
 
-    num_pairs = len(config.PAIRS)
-    pct = config.MAX_CAPITAL_PCT / 100.0
+    if balance <= 0:
+        return "NO BALANCE"
 
+    # capital allocation per pair
+    num_pairs = max(1, len(config.PAIRS))
+    pct = config.MAX_CAPITAL_PCT / 100.0
     calc_usdt = balance * pct / num_pairs
-    trade_cost = max(5, calc_usdt)
+
+    trade_cost = max(5, calc_usdt)  # at least 5 USDT
 
     try:
-        side = "buy" if signal == "LONG_ENTRY" else "sell"
+        side = "buy" if "LONG_ENTRY" in signal else "sell"
 
         order = exchange.create_order(
             symbol=symbol,
@@ -122,24 +127,12 @@ def execute_market_order(exchange, symbol, signal, balance):
             params={
                 "marginCoin": "USDT",
                 "cost": trade_cost,
-                "reduceOnly": False
-            }
+                "reduceOnly": False,
+            },
         )
+
         return f"ORDER OK: {order}"
 
     except Exception as e:
-        return f"ORDER ERROR: {str(e)}"
-
-
-# ==============================
-# ASYNC GRID STEP (AWAIT SAFE)
-# bot.py expects: await grid_step()
-# ==============================
-async def grid_step(exchange, symbol):
-    balance = await get_assumed_balance(exchange)
-    signal, price = get_grid_signal(exchange, symbol, balance)
-    result = execute_market_order(exchange, symbol, signal, balance)
-
-    # return clean strings (NOT coroutines)
-    return f"[GRID] {symbol} — {signal} @ {price}\n{result}"
+        return f"ORDER ERROR: {e}"
 
