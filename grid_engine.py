@@ -1,5 +1,5 @@
 # ======================================================
-# grid_engine.py — FINAL FIX FOR BITGET FUTURES EXECUTION
+# grid_engine.py — FINAL CLEAN + SAFE VERSION
 # ======================================================
 
 import ccxt
@@ -8,9 +8,6 @@ import config
 GRID_CENTER = {}
 
 
-# ======================================================
-# CONNECT TO BITGET
-# ======================================================
 def get_exchange():
     try:
         ex = ccxt.bitget({
@@ -19,39 +16,33 @@ def get_exchange():
             "password": config.BITGET_PASSPHRASE,
             "enableRateLimit": True,
             "options": {
-                "defaultType": "swap",  # USDT-M perpetual futures
+                "defaultType": "swap",
                 "createMarketBuyOrderRequiresPrice": False,
             },
         })
         ex.load_markets()
         return ex
     except Exception as e:
-        print("EXCHANGE INIT ERROR:", e)
+        print("EXCHANGE INIT ERROR: " + str(e))
         return None
 
 
-# ======================================================
-# BOT BALANCE (ASSUMED)
-# ======================================================
 def get_balance():
-    return float(config.ASSUMED_BALANCE_USDT)
-
-
-# ======================================================
-# PRICE FETCH
-# ======================================================
-def get_price(exchange, symbol):
     try:
-        ticker = exchange.fetch_ticker(symbol)
-        return float(ticker["last"])
-    except Exception as e:
-        print(f"PRICE ERROR {symbol}: {e}")
+        return float(config.ASSUMED_BALANCE_USDT)
+    except:
         return 0.0
 
 
-# ======================================================
-# GRID SIGNAL DETECTION
-# ======================================================
+def get_price(exchange, symbol):
+    try:
+        t = exchange.fetch_ticker(symbol)
+        return float(t["last"])
+    except Exception as e:
+        print("PRICE ERROR " + symbol + ": " + str(e))
+        return 0.0
+
+
 def check_grid_signal(symbol, price, balance):
     if price <= 0:
         return "NO DATA"
@@ -70,32 +61,26 @@ def check_grid_signal(symbol, price, balance):
 
     if price >= upper:
         GRID_CENTER[symbol] = price
-        return f"SHORT_ENTRY @ {price}"
+        return "SHORT_ENTRY @ " + str(price)
 
     if price <= lower:
         GRID_CENTER[symbol] = price
-        return f"LONG_ENTRY @ {price}"
+        return "LONG_ENTRY @ " + str(price)
 
     return "HOLD — Neutral zone"
 
 
-# ======================================================
-# ORDER EXECUTION — *** ONLY COST, NO SIZE ***
-# ======================================================
 def execute_order(exchange, symbol, signal, balance):
     if "ENTRY" not in signal:
         return "NO ORDER"
 
     if not config.LIVE_TRADING:
-        return f"[SIMULATION] {signal} — {symbol}"
+        return "[SIMULATION] EXECUTED " + signal + " " + symbol
 
     price = get_price(exchange, symbol)
     if price <= 0:
         return "BAD PRICE"
 
-    # ---------------------------------------------
-    # MINIMUM NOTIONAL COST PER PAIR
-    # ---------------------------------------------
     if symbol.startswith("SUI"):
         min_cost_usdt = 5.5
     elif symbol.startswith("BTC"):
@@ -103,12 +88,8 @@ def execute_order(exchange, symbol, signal, balance):
     else:
         min_cost_usdt = 10.0
 
-    # ⭐ CONVERT COST TO STRING — ZERO DECIMAL ISSUES ⭐
     cost_param = str(min_cost_usdt)
 
-    # ---------------------------------------------
-    # LEVERAGE
-    # ---------------------------------------------
     try:
         exchange.set_leverage(
             leverage=5,
@@ -118,9 +99,6 @@ def execute_order(exchange, symbol, signal, balance):
     except:
         pass
 
-    # ---------------------------------------------
-    # ISOLATED MARGIN
-    # ---------------------------------------------
     try:
         exchange.set_margin_mode(
             marginMode="isolated",
@@ -130,29 +108,25 @@ def execute_order(exchange, symbol, signal, balance):
     except:
         pass
 
-    # ---------------------------------------------
-    # *** BITGET ORDER EXECUTION USING COST ***
-    # ---------------------------------------------
     try:
-        side = "buy" if "LONG_ENTRY" in signal else "sell"
+        side = "buy"
+        if "SHORT_ENTRY" in signal:
+            side = "sell"
 
         order = exchange.create_order(
             symbol=symbol,
             type="market",
             side=side,
-            amount=None,     # ignored
-            price=None,      # ignored
+            amount=None,
+            price=None,
             params={
                 "marginCoin": "USDT",
-                "cost": cost_param,   # ⭐ COST AS STRING — NO DECIMAL ERRORS ⭐
+                "cost": cost_param,
                 "force": "normal",
             },
         )
 
-        return (
-            f"ORDER OK: {symbol}, cost={cost_param}, price≈{price}, order={order}"
-        )
+        return "ORDER OK: symbol=" + symbol + ", cost=" + cost_param + ", order=" + str(order)
 
     except Exception as e:
-        return f"ORDER ERROR: {e}"
-
+        return "ORDER ERROR: " + str(e)
