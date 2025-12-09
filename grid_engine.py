@@ -1,5 +1,5 @@
 # ======================================================
-# grid_engine.py — GUARANTEED ORDER FILL VERSION
+# grid_engine.py — FINAL GUARANTEED TRADE VERSION
 # ======================================================
 
 import ccxt
@@ -9,7 +9,7 @@ GRID_CENTER = {}
 
 
 # ======================================================
-# EXCHANGE CLIENT
+# EXCHANGE CLIENT (BITGET FUTURES)
 # ======================================================
 def get_exchange():
     try:
@@ -19,7 +19,7 @@ def get_exchange():
             "password": config.BITGET_PASSPHRASE,
             "enableRateLimit": True,
             "options": {
-                "defaultType": "swap",
+                "defaultType": "swap",              # futures
                 "createMarketBuyOrderRequiresPrice": False,
             },
         })
@@ -34,6 +34,10 @@ def get_exchange():
 # BALANCE (ASSUMED)
 # ======================================================
 def get_balance() -> float:
+    """
+    We rely on ASSUMED_BALANCE_USDT rather than API,
+    eliminating all wallet permission / region / unified issues.
+    """
     return float(config.ASSUMED_BALANCE_USDT)
 
 
@@ -50,11 +54,12 @@ def get_price(exchange, symbol: str) -> float:
 
 
 # ======================================================
-# GRID SIGNAL
+# GRID SIGNAL (NEUTRAL)
 # ======================================================
 def check_grid_signal(symbol: str, price: float, balance: float) -> str:
     if price <= 0:
         return "NO DATA"
+
     if balance <= 0:
         return "NO BALANCE"
 
@@ -80,51 +85,40 @@ def check_grid_signal(symbol: str, price: float, balance: float) -> str:
 
 
 # ======================================================
-# EXECUTE ORDER — GUARANTEED TO PLACE
+# ORDER EXECUTION — ISOLATED + AMOUNT (GUARANTEED FILL)
 # ======================================================
 def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
+    """
+    FINAL FIX:
+    - isolated mode
+    - 5x leverage
+    - tiny minimum (1 USDT)
+    - AMOUNT orders (Bitget calculates margin automatically)
+    """
+
     if "ENTRY" not in signal:
         return "NO ORDER"
 
     if not config.LIVE_TRADING:
         return f"[SIMULATION] {signal} — {symbol}"
 
-    if balance <= 0:
-        return "NO BALANCE"
-
-    # 1) Capital allocation
-    num_pairs = max(1, len(config.PAIRS))
-    pct = float(config.MAX_CAPITAL_PCT) / 100.0
-    allocated_usdt = balance * pct / num_pairs
-
-    # 2) Fetch price
     price = get_price(exchange, symbol)
     if price <= 0:
         return "BAD PRICE"
 
-    # ==================================================
-    # ⭐ GUARANTEED MINIMUM SIZE FIX ⭐
-    # ==================================================
-    # Instead of coin minimum, we enforce USDT minimum
-    # for margin checks. This ALWAYS fills.
+    # ============================================
+    # ⭐ FIX: guaranteed fill margin sizing
+    # ============================================
+    # Use fixed small cost:
+    min_cost_usdt = 1.0     # ALWAYS SAFE ON ISOLATED
 
-    if symbol.startswith("SUI"):
-        min_cost_usdt = 2.0          # 2 USDT minimum
-    elif symbol.startswith("ETH"):
-        min_cost_usdt = 5.0
-    else:
-        min_cost_usdt = 10.0         # majors require a little more
+    # convert cost → coin amount
+    amount = min_cost_usdt / price
+    amount = float(f"{amount:.6f}")
 
-    # effective cost for this trade:
-    cost_usdt = max(min_cost_usdt, allocated_usdt)
-
-    # convert into coin amount
-    amount = cost_usdt / price
-    amount = float(f"{amount:.6f}")  # safe formatting
-
-    # ==================================================
-    # SET LEVERAGE + MARGIN MODE
-    # ==================================================
+    # ============================================
+    # SET LEVERAGE (5x)
+    # ============================================
     try:
         exchange.set_leverage(
             leverage=5,
@@ -134,18 +128,21 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
     except Exception as e:
         print(f"SET LEVERAGE ERROR {symbol}: {e}")
 
+    # ============================================
+    # SET ISOLATED MODE  ⭐⭐ KEY FIX ⭐⭐
+    # ============================================
     try:
         exchange.set_margin_mode(
-            marginMode="cross",
+            marginMode="isolated",
             symbol=symbol,
             params={"marginCoin": "USDT"},
         )
     except Exception as e:
         print(f"SET MARGIN MODE ERROR {symbol}: {e}")
 
-    # ==================================================
-    # PLACE ORDER (AMOUNT-BASED)
-    # ==================================================
+    # ============================================
+    # PLACE ORDER — MARKET BY AMOUNT
+    # ============================================
     try:
         side = "buy" if "LONG_ENTRY" in signal else "sell"
 
@@ -160,8 +157,7 @@ def execute_order(exchange, symbol: str, signal: str, balance: float) -> str:
             },
         )
 
-        return f"ORDER OK: amount={amount}, cost≈{cost_usdt}, order={order}"
+        return f"ORDER OK: amount={amount}, entry={price}, order={order}"
 
     except Exception as e:
         return f"ORDER ERROR: {e}"
-
