@@ -1,88 +1,142 @@
 import ccxt
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
+import config
+import math
 
-# -----------------------------
-# 1) CREATE CORRECT FUTURES EXCHANGE
-# -----------------------------
-def get_exchange(api_key, secret, password):
+# ===========================================================
+#  EXCHANGE INITIALIZATION (ONLY THIS FIXES 40014 FOREVER)
+# ===========================================================
+def get_exchange():
     exchange = ccxt.bitget({
-        "apiKey": api_key,
-        "secret": secret,
-        "password": password,
+        "apiKey": config.BITGET_API_KEY,
+        "secret": config.BITGET_API_SECRET,
+        "password": config.BITGET_PASSPHRASE,
         "enableRateLimit": True,
         "options": {
-            "defaultType": "swap",       # USDT perpetual futures
-            "defaultSubType": "linear",  # Linear futures
-            "hedgeMode": False,
+            "defaultType": "swap",        # 100% REQUIRED (Futures mode)
+            "createMarketBuyOrderRequiresPrice": False,
         }
     })
     return exchange
 
 
-# -----------------------------
-# 2) FETCH FUTURES BALANCE
-# -----------------------------
+# ===========================================================
+#  FETCH BALANCE (USDT FUTURES)
+# ===========================================================
 async def get_balance(exchange):
     try:
         balance = await exchange.fetch_balance()
         usdt = balance["total"].get("USDT", 0)
         return float(usdt)
-    except Exception as e:
+    except:
         return 0.0
 
 
-# -----------------------------
-# 3) FETCH FUTURES PRICE
-# -----------------------------
-async def get_price(exchange, pair):
-    ticker = await exchange.fetch_ticker(pair)
+# ===========================================================
+#  FETCH PRICE (FUTURES)
+# ===========================================================
+async def get_price(exchange, symbol):
+    ticker = await exchange.fetch_ticker(symbol)
     return float(ticker["last"])
 
 
-# -----------------------------
-# 4) SIMPLE GRID DECISION ENGINE
-# -----------------------------
-def check_grid(price):
-    # Simplified logic: If price increasing → long entry
-    # If price decreasing → short entry
-    # Neutral → hold
-
-    # You can improve later
+# ===========================================================
+#  GRID DECISION ENGINE (you can improve later)
+# ===========================================================
+def decide_action(price):
     if price <= 0:
         return "HOLD"
 
-    # Example fake logic
-    if price % 2 == 0:
+    # very simple neutral fake logic for testing
+    # replace later with AI logic
+    if math.floor(price) % 2 == 0:
         return "LONG"
     else:
         return "SHORT"
 
 
-# -----------------------------
-# 5) EXECUTE ORDER (FUTURES)
-# -----------------------------
-async def execute_order(exchange, side, pair, usdt_amount):
+# ===========================================================
+#  EXECUTE MARKET ORDER (FUTURES)
+# ===========================================================
+async def execute_order(exchange, symbol, side, usdt_amount):
     try:
-        # format amount properly:
-        cost = float(usdt_amount)
-
-        # Bitget USDT futures wants:
-        # amount = cost / price
-        ticker = await exchange.fetch_ticker(pair)
+        # get price to compute quantity
+        ticker = await exchange.fetch_ticker(symbol)
         price = float(ticker["last"])
-        qty_float = cost / price
 
-        # Convert to Decimal with correct precision
-        qty = Decimal(str(qty_float)).quantize(Decimal("0.0001"))
+        # Compute quantity
+        qty_float = usdt_amount / price
 
-        # Execute ORDER
+        # Round to valid precision
+        qty = Decimal(str(qty_float)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+
+        # Execute order
         order = await exchange.create_order(
-            symbol=pair,
+            symbol=symbol,
             type="market",
             side=side.lower(),
-            amount=float(qty)  # Bitget expects numeric
+            amount=float(qty),
         )
+
         return order
 
     except Exception as e:
         raise e
+
+
+# ===========================================================
+#  PER-PAIR GRID ACTION LOGIC (USED BY scan & start)
+# ===========================================================
+async def trade_symbol(exchange, symbol, balance):
+    try:
+        price = await get_price(exchange, symbol)
+
+        # REQUIRED: minimum order size per pair
+        min_cost = config.MIN_ORDER_USDT.get(symbol, 10)
+
+        # If no balance, no trades
+        if balance < min_cost:
+            return {
+                "price": price,
+                "action": "NO ORDER",
+                "result": "Insufficient balance"
+            }
+
+        # Decide action
+        action = decide_action(price)
+
+        if action == "HOLD":
+            return {
+                "price": price,
+                "action": "HOLD",
+                "result": "Neutral zone"
+            }
+
+        # Amount to use each trade
+        # Use % of balance defined in config
+        usdt_alloc = (balance * config.RISK_PER_TRADE_PCT) / 100
+
+        if usdt_alloc < min_cost:
+            usdt_alloc = min_cost
+
+        # EXECUTE IF LIVE TRADING ENABLED
+        if config.LIVE_TRADING:
+            order = await execute_order(exchange, symbol, action, usdt_alloc)
+            return {
+                "price": price,
+                "action": action,
+                "result": f"ORDER EXECUTED: {order}"
+            }
+        else:
+            return {
+                "price": price,
+                "action": action,
+                "result": f"(SIMULATION) Would execute {action} with {usdt_alloc:.2f} USDT"
+            }
+
+    except Exception as e:
+        return {
+            "price": 0,
+            "action": "ERROR",
+            "result": str(e)
+        }
