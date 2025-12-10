@@ -10,7 +10,7 @@ import grid_engine
 
 
 # ------------------------------------
-# GLOBAL EXCHANGE INSTANCE
+# GLOBAL EXCHANGE
 # ------------------------------------
 exchange = grid_engine.get_exchange(
     config.BITGET_API_KEY,
@@ -42,11 +42,12 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ------------------------------------
-# START COMMAND LOOP
+# GRID LOOP
 # ------------------------------------
 async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
-    job_context = context.job.context
-    chat_id = job_context["chat_id"]
+    chat_id = context.chat_data.get("chat_id")
+    if not chat_id:
+        return
 
     try:
         balance = float(exchange.fetch_balance()['USDT']['free'])
@@ -77,18 +78,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("BOT STARTED — PIONEX-STYLE NEUTRAL GRID")
 
-    # stop old job if running
     for job in context.job_queue.get_jobs_by_name("grid_loop"):
         job.schedule_removal()
 
-    # start new grid loop every 90 seconds
     context.job_queue.run_repeating(
         grid_loop,
         interval=90,
         first=5,
         name="grid_loop",
-        context={"chat_id": chat_id},
     )
+
+    # save chat ID for grid loop
+    context.chat_data["chat_id"] = chat_id
 
 
 # ------------------------------------
@@ -103,7 +104,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("start", start))
 
-    app.job_queue  # REQUIRED
+    app.job_queue
 
     app.run_polling()
 
