@@ -1,94 +1,88 @@
 import ccxt
+from decimal import Decimal
 
-def get_exchange(api_key, api_secret, password):
+# -----------------------------
+# 1) CREATE CORRECT FUTURES EXCHANGE
+# -----------------------------
+def get_exchange(api_key, secret, password):
     exchange = ccxt.bitget({
         "apiKey": api_key,
-        "secret": api_secret,
+        "secret": secret,
         "password": password,
         "enableRateLimit": True,
         "options": {
-            "defaultType": "swap",  # futures mode
+            "defaultType": "swap",       # USDT perpetual futures
+            "defaultSubType": "linear",  # Linear futures
+            "hedgeMode": False,
         }
     })
     return exchange
 
 
-def get_grid_action(price, lower, upper):
-    if price < lower:
-        return "LONG_ENTRY"
-    elif price > upper:
-        return "SHORT_ENTRY"
-    else:
+# -----------------------------
+# 2) FETCH FUTURES BALANCE
+# -----------------------------
+async def get_balance(exchange):
+    try:
+        balance = await exchange.fetch_balance()
+        usdt = balance["total"].get("USDT", 0)
+        return float(usdt)
+    except Exception as e:
+        return 0.0
+
+
+# -----------------------------
+# 3) FETCH FUTURES PRICE
+# -----------------------------
+async def get_price(exchange, pair):
+    ticker = await exchange.fetch_ticker(pair)
+    return float(ticker["last"])
+
+
+# -----------------------------
+# 4) SIMPLE GRID DECISION ENGINE
+# -----------------------------
+def check_grid(price):
+    # Simplified logic: If price increasing → long entry
+    # If price decreasing → short entry
+    # Neutral → hold
+
+    # You can improve later
+    if price <= 0:
         return "HOLD"
 
+    # Example fake logic
+    if price % 2 == 0:
+        return "LONG"
+    else:
+        return "SHORT"
 
-def execute_order(exchange, symbol, signal, balance, leverage=5):
+
+# -----------------------------
+# 5) EXECUTE ORDER (FUTURES)
+# -----------------------------
+async def execute_order(exchange, side, pair, usdt_amount):
     try:
-        if signal not in ["LONG_ENTRY", "SHORT_ENTRY"]:
-            return "NO ORDER"
+        # format amount properly:
+        cost = float(usdt_amount)
 
-        ticker = exchange.fetch_ticker(symbol)
-        price = float(ticker['last'])
+        # Bitget USDT futures wants:
+        # amount = cost / price
+        ticker = await exchange.fetch_ticker(pair)
+        price = float(ticker["last"])
+        qty_float = cost / price
 
-        risk_pct = 0.20
-        order_cost = balance * risk_pct
+        # Convert to Decimal with correct precision
+        qty = Decimal(str(qty_float)).quantize(Decimal("0.0001"))
 
-        if symbol == "BTC/USDT":
-            min_cost = 10
-        else:
-            min_cost = 6
-
-        if order_cost < min_cost:
-            return f"NO ORDER — COST {order_cost:.2f} < MIN {min_cost}"
-
-        qty = order_cost / price
-
-        params = {
-            "reduceOnly": False,
-            "leverage": leverage,
-        }
-
-        if signal == "LONG_ENTRY":
-            exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side='buy',
-                amount=float(qty),
-                params=params
-            )
-            return f"ORDER OK — LONG {symbol} qty={qty:.6f}"
-
-        if signal == "SHORT_ENTRY":
-            exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side='sell',
-                amount=float(qty),
-                params=params
-            )
-            return f"ORDER OK — SHORT {symbol} qty={qty:.6f}"
-
-        return "NO ORDER"
+        # Execute ORDER
+        order = await exchange.create_order(
+            symbol=pair,
+            type="market",
+            side=side.lower(),
+            amount=float(qty)  # Bitget expects numeric
+        )
+        return order
 
     except Exception as e:
-        return f"ORDER ERROR: {str(e)}"
-
-
-def trade_symbol(exchange, symbol, balance, grid_range=0.004):
-    ticker = exchange.fetch_ticker(symbol)
-    price = float(ticker['last'])
-
-    lower = price * (1 - grid_range)
-    upper = price * (1 + grid_range)
-
-    action = get_grid_action(price, lower, upper)
-    result = execute_order(exchange, symbol, action, balance)
-
-    return {
-        "symbol": symbol,
-        "price": price,
-        "lower": lower,
-        "upper": upper,
-        "action": action,
-        "result": result
-    }
+        raise e
