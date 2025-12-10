@@ -1,9 +1,12 @@
+# =====================================
+# BOT.PY — REPLACE FULL FILE
+# =====================================
+
 from telegram.ext import ApplicationBuilder, CommandHandler
 import asyncio
-import grid_engine
 import config
+import grid_engine
 
-# ONE GLOBAL EXCHANGE INSTANCE
 exchange = grid_engine.get_exchange()
 
 
@@ -17,10 +20,7 @@ async def start(update, context):
             for symbol in config.PAIRS:
                 result = await grid_engine.trade_symbol(exchange, symbol, balance)
 
-                msg = (
-                    f"[GRID] {symbol} — {result['action']} @ {result['price']}\n"
-                    f"{result['result']}"
-                )
+                msg = f"[GRID] {symbol} — {result['action']} @ {result['price']}\n{result['result']}"
 
                 await update.message.reply_text(msg)
 
@@ -39,25 +39,19 @@ async def scan(update, context):
         for symbol in config.PAIRS:
             result = await grid_engine.trade_symbol(exchange, symbol, balance)
 
-            msg = (
-                f"{symbol}: price={result['price']}\n"
-                f"{symbol}: {result['action']} — {result['result']}"
-            )
-
+            msg = f"{symbol}: {result['action']} — {result['result']}"
             await update.message.reply_text(msg)
 
     except Exception as e:
         await update.message.reply_text(f"SCAN ERROR:\n{str(e)}")
 
 
-# ⭐⭐ FIX: NO asyncio.run(), NO manual loop, JUST polling ⭐⭐
 def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan))
 
-    # IMPORTANT — synchronous call to polling with no loop closures
     app.run_polling()
 
 
