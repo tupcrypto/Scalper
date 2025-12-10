@@ -1,14 +1,17 @@
-import asyncio
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 
 import config
 import grid_engine
 
 
-# -----------------------------
-# GET EXCHANGE (one instance globally)
-# -----------------------------
+# ------------------------------------
+# GLOBAL EXCHANGE INSTANCE
+# ------------------------------------
 exchange = grid_engine.get_exchange(
     config.BITGET_API_KEY,
     config.BITGET_API_SECRET,
@@ -16,14 +19,15 @@ exchange = grid_engine.get_exchange(
 )
 
 
-# -----------------------------
+# ------------------------------------
 # SCAN COMMAND
-# -----------------------------
+# ------------------------------------
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         balance = float(exchange.fetch_balance()['USDT']['free'])
 
         reply = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n\n"
+
         for symbol in config.PAIRS:
             info = grid_engine.trade_symbol(exchange, symbol, balance)
             reply += (
@@ -37,9 +41,9 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"SCAN ERROR:\n{str(e)}")
 
 
-# -----------------------------
-# GRID LOOP FOR START COMMAND
-# -----------------------------
+# ------------------------------------
+# START COMMAND LOOP
+# ------------------------------------
 async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
     job_context = context.job.context
     chat_id = job_context["chat_id"]
@@ -59,46 +63,47 @@ async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
             )
 
     except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"[GRID LOOP ERROR]\n{str(e)}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"[GRID LOOP ERROR]\n{str(e)}"
+        )
 
 
-# -----------------------------
+# ------------------------------------
 # START COMMAND
-# -----------------------------
+# ------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
 
     await update.message.reply_text("BOT STARTED — PIONEX-STYLE NEUTRAL GRID")
 
-    # stop old running job if exists
+    # stop old job if running
     for job in context.job_queue.get_jobs_by_name("grid_loop"):
         job.schedule_removal()
 
-    # run grid loop every 90 seconds
+    # start new grid loop every 90 seconds
     context.job_queue.run_repeating(
         grid_loop,
         interval=90,
         first=5,
         name="grid_loop",
-        context={"chat_id": chat_id}
+        context={"chat_id": chat_id},
     )
 
 
-# -----------------------------
-# MAIN APPLICATION
-# -----------------------------
-async def main():
+# ------------------------------------
+# MAIN APP (NO ASYNCIO.RUN)
+# ------------------------------------
+if __name__ == "__main__":
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("start", start))
 
-    # REQUIRED FOR JOB QUEUE
-    app.job_queue
+    app.job_queue  # REQUIRED
 
-    await app.run_polling()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    app.run_polling()
 
