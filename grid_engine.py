@@ -1,5 +1,4 @@
 import ccxt.async_support as ccxt
-import math
 import config
 
 # ------------------------------------------------
@@ -8,33 +7,37 @@ import config
 async def get_exchange():
     exchange = ccxt.bitget({
         "apiKey": config.BITGET_API_KEY,
-        "secret": config.BITGET_SECRET_KEY,
+        "secret": config.BITGET_API_SECRET,
         "password": config.BITGET_PASSPHRASE,
         "enableRateLimit": True,
         "options": {
-            "defaultType": "swap",  # FUTURES
-            "adjustForTimeDifference": True,
-        }
+            "defaultType": "swap",  # FUTURES account
+        },
     })
     return exchange
 
 # ------------------------------------------------
-# GET REAL BITGET FUTURES BALANCE (CRUCIAL FIX)
+# GET REAL FUTURES BALANCE
 # ------------------------------------------------
 async def get_balance(exchange):
     try:
-        balance = await exchange.fetch_balance()
+        # IMPORTANT — forces swap/futures balance
+        balance = await exchange.fetch_balance({"type": "swap"})
 
-        # MAIN FUTURES BALANCE LOCATION — MOST ACCURATE FOR BITGET
+        # 1️⃣ Primary futures location
         usdt = (
             balance.get("info", {})
                    .get("USDT", {})
                    .get("available", None)
         )
 
-        # fallback for other balance responses
+        # 2️⃣ Secondary mapping
         if usdt is None:
-            usdt = balance.get("USDT", {}).get("free", 0.0)
+            usdt = balance.get("USDT", {}).get("free", None)
+
+        # 3️⃣ If nothing matched → treat as zero
+        if usdt is None:
+            return 0.0
 
         return float(usdt)
 
@@ -43,37 +46,26 @@ async def get_balance(exchange):
         return 0.0
 
 # ------------------------------------------------
-# FETCH CURRENT PRICE
+# GET PRICE
 # ------------------------------------------------
 async def get_price(exchange, symbol):
     ticker = await exchange.fetch_ticker(symbol)
     return float(ticker["last"])
 
 # ------------------------------------------------
-# EXECUTE ORDER (MARKET ORDER)
+# EXECUTE MARKET ORDER
 # ------------------------------------------------
-async def execute_order(exchange, symbol, side, amount):
+async def execute_order(exchange, symbol, side, cost):
     try:
-        # Bitget requires amount as COST for market buys
-        # So if side is buy -> cost = amount
-        # If side is sell -> amount remains amount (contract size)
+        params = {"reduceOnly": False}
 
-        if side.lower() == "buy":
-            order = await exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side="buy",
-                amount=amount,  # COST IN USDT
-                params={"reduceOnly": False}
-            )
-        else:
-            order = await exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side="sell",
-                amount=amount,  # COST IN USDT
-                params={"reduceOnly": False}
-            )
+        order = await exchange.create_order(
+            symbol=symbol,
+            type="market",
+            side=side.lower(),
+            amount=cost,    # Bitget market uses cost NOT size
+            params=params,
+        )
 
         return order
 
@@ -82,70 +74,43 @@ async def execute_order(exchange, symbol, side, amount):
         return None
 
 # ------------------------------------------------
-# GRID DECISION LOGIC
+# DECISION LOGIC
 # ------------------------------------------------
-async def grid_decision(exchange, symbol, balance):
+async def grid_decision(price):
+    # Basic test logic — you will improve later
+    if price % 2 < 1:
+        return "LONG"
+    else:
+        return "SHORT"
+
+# ------------------------------------------------
+# PER-SYMBOL EXECUTION
+# ------------------------------------------------
+async def process_symbol(exchange, symbol, balance):
     price = await get_price(exchange, symbol)
 
-    # If no balance
-    if balance < 5:
-        return "NO_ORDER", price
+    if balance < config.MIN_ORDER.get(symbol, 5):
+        return {
+            "action": "NO ORDER",
+            "price": price,
+            "result": f"Balance {balance} too small"
+        }
 
-    # Pionex-style grid logic (simple demo)
-    # Very basic — expand later into advanced grid
+    action = await grid_decision(price)
+    cost = config.MIN_ORDER[symbol]
 
-    if price % 2 == 0:  # random condition
-        return "LONG", price
-    elif price % 3 == 0:
-        return "SHORT", price
+    order = await execute_order(exchange, symbol, action, cost)
+
+    if order:
+        return {
+            "action": action,
+            "price": price,
+            "result": f"ORDER EXECUTED: {cost} USDT"
+        }
     else:
-        return "HOLD", price
-
-# ------------------------------------------------
-# GRID LOOP
-# ------------------------------------------------
-async def grid_loop(update, context):
-    try:
-        exchange = await get_exchange()
-
-        balance = await get_balance(exchange)
-
-        # ------------------
-        # BTC
-        # ------------------
-        action_btc, price_btc = await grid_decision(exchange, "BTC/USDT:USDT", balance)
-
-        if action_btc == "LONG":
-            cost = max(5.5, balance * 0.03)
-            await execute_order(exchange, "BTC/USDT:USDT", "buy", cost)
-            await update.message.reply_text(f"[GRID] BTC LONG @ {price_btc}")
-
-        elif action_btc == "SHORT":
-            cost = max(5.5, balance * 0.03)
-            await execute_order(exchange, "BTC/USDT:USDT", "sell", cost)
-            await update.message.reply_text(f"[GRID] BTC SHORT @ {price_btc}")
-
-        else:
-            await update.message.reply_text(f"[GRID] BTC — HOLD @ {price_btc}, Balance {balance}")
-
-        # ------------------
-        # SUI
-        # ------------------
-        action_sui, price_sui = await grid_decision(exchange, "SUI/USDT:USDT", balance)
-
-        if action_sui == "LONG":
-            cost = max(5.5, balance * 0.03)
-            await execute_order(exchange, "SUI/USDT:USDT", "buy", cost)
-            await update.message.reply_text(f"[GRID] SUI LONG @ {price_sui}")
-
-        elif action_sui == "SHORT":
-            cost = max(5.5, balance * 0.03)
-            await execute_order(exchange, "SUI/USDT:USDT", "sell", cost)
-            await update.message.reply_text(f"[GRID] SUI SHORT @ {price_sui}")
-
-        else:
-            await update.message.reply_text(f"[GRID] SUI — HOLD @ {price_sui}, Balance {balance}")
-
-    except Exception as e:
-        await update.message.reply_text(f"[GRID LOOP ERROR] {str(e)}")
+        return {
+            "action": action,
+            "price": price,
+            "result": f"ORDER FAILED"
+        }
 
