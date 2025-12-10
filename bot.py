@@ -1,103 +1,104 @@
-# ======================================================
-# bot.py — FINAL FIXED VERSION FOR RENDER
-# ======================================================
-
 import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
 import config
 import grid_engine
 
-RUN_FLAG = False
+
+# -----------------------------
+# GET EXCHANGE (one instance globally)
+# -----------------------------
+exchange = grid_engine.get_exchange(
+    config.BITGET_API_KEY,
+    config.BITGET_API_SECRET,
+    config.BITGET_PASSPHRASE
+)
 
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global RUN_FLAG
-    RUN_FLAG = True
-    await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="BOT STARTED — GRID MODE ACTIVE")
-
-
-async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global RUN_FLAG
-    RUN_FLAG = False
-    await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="BOT STOPPED")
-
-
-async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# -----------------------------
+# SCAN COMMAND
+# -----------------------------
+async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        exchange = grid_engine.get_exchange()
-        if exchange is None:
-            await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="SCAN ERROR — EXCHANGE INIT FAILED")
-            return
+        balance = float(exchange.fetch_balance()['USDT']['free'])
 
-        bal = grid_engine.get_balance()
-        out = "SCAN DEBUG — BALANCE: " + str(bal) + " USDT\n\n"
-
-        for sym in config.PAIRS:
-            px = grid_engine.get_price(exchange, sym)
-            out = out + sym + ": price=" + str(px) + "\n"
-            sig = grid_engine.check_grid_signal(sym, px, bal)
-            out = out + sym + ": " + sig + "\n\n"
-
-        await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=out)
-
-    except Exception as e:
-        await context.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="SCAN ERROR: " + str(e))
-
-
-async def grid_loop(app):
-    global RUN_FLAG
-    exchange = grid_engine.get_exchange()
-
-    while True:
-        try:
-            if RUN_FLAG:
-                bal = grid_engine.get_balance()
-
-                for sym in config.PAIRS:
-                    px = grid_engine.get_price(exchange, sym)
-                    sig = grid_engine.check_grid_signal(sym, px, bal)
-
-                    await app.bot.send_message(
-                        chat_id=config.TELEGRAM_CHAT_ID,
-                        text="[GRID] " + sym + " — " + sig
-                    )
-
-                    out = grid_engine.execute_order(exchange, sym, sig, bal)
-
-                    await app.bot.send_message(
-                        chat_id=config.TELEGRAM_CHAT_ID,
-                        text=out
-                    )
-
-        except Exception as ex:
-            await app.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text="[GRID LOOP ERROR] " + str(ex)
+        reply = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n\n"
+        for symbol in config.PAIRS:
+            info = grid_engine.trade_symbol(exchange, symbol, balance)
+            reply += (
+                f"{symbol}: price={info['price']}\n"
+                f"{symbol}: {info['action']} — {info['result']}\n\n"
             )
 
-        await asyncio.sleep(120)
+        await update.message.reply_text(reply)
+
+    except Exception as e:
+        await update.message.reply_text(f"SCAN ERROR:\n{str(e)}")
 
 
+# -----------------------------
+# GRID LOOP FOR START COMMAND
+# -----------------------------
+async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
+    job_context = context.job.context
+    chat_id = job_context["chat_id"]
+
+    try:
+        balance = float(exchange.fetch_balance()['USDT']['free'])
+
+        for symbol in config.PAIRS:
+            info = grid_engine.trade_symbol(exchange, symbol, balance)
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"[GRID] {symbol} — {info['action']} @ {info['price']}\n"
+                    f"{info['result']}"
+                )
+            )
+
+    except Exception as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"[GRID LOOP ERROR]\n{str(e)}")
+
+
+# -----------------------------
+# START COMMAND
+# -----------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+
+    await update.message.reply_text("BOT STARTED — PIONEX-STYLE NEUTRAL GRID")
+
+    # stop old running job if exists
+    for job in context.job_queue.get_jobs_by_name("grid_loop"):
+        job.schedule_removal()
+
+    # run grid loop every 90 seconds
+    context.job_queue.run_repeating(
+        grid_loop,
+        interval=90,
+        first=5,
+        name="grid_loop",
+        context={"chat_id": chat_id}
+    )
+
+
+# -----------------------------
+# MAIN APPLICATION
+# -----------------------------
 async def main():
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("stop", cmd_stop))
-    app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("start", start))
 
-    # CREATE GRID BACKGROUND LOOP
-    asyncio.create_task(grid_loop(app))
+    # REQUIRED FOR JOB QUEUE
+    app.job_queue
 
-    # NEVER close event loop — KEEP RUNNING FOREVER
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-
-    # Keep alive forever
-    await asyncio.Future()
+    await app.run_polling()
 
 
-# IMPORTANT — RUN COROUTINE CORRECTLY
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
+
