@@ -1,14 +1,19 @@
-import math
 import ccxt
 
-# ===============================
-# GRID DECISION LOGIC
-# ===============================
+def get_exchange(api_key, api_secret, password):
+    exchange = ccxt.bitget({
+        "apiKey": api_key,
+        "secret": api_secret,
+        "password": password,
+        "enableRateLimit": True,
+        "options": {
+            "defaultType": "swap",  # futures mode
+        }
+    })
+    return exchange
+
 
 def get_grid_action(price, lower, upper):
-    """
-    Decide LONG, SHORT or HOLD based on grid levels.
-    """
     if price < lower:
         return "LONG_ENTRY"
     elif price > upper:
@@ -17,30 +22,17 @@ def get_grid_action(price, lower, upper):
         return "HOLD"
 
 
-# ===============================
-# EXECUTE ORDER ON BITGET FUTURES (MARKET)
-# ===============================
-
 def execute_order(exchange, symbol, signal, balance, leverage=5):
     try:
-        # No action required
         if signal not in ["LONG_ENTRY", "SHORT_ENTRY"]:
             return "NO ORDER"
 
         ticker = exchange.fetch_ticker(symbol)
         price = float(ticker['last'])
 
-        # ====================
-        # CAPITAL ALLOCATION
-        # ====================
-        risk_pct = 0.20   # 20% per grid order (adjustable)
+        risk_pct = 0.20
         order_cost = balance * risk_pct
 
-        # =============================================
-        # BITGET MINIMUM FUTURES ORDER COST ENFORCEMENT
-        # =============================================
-        # Based on live exchange rules you confirmed:
-        # BTC ≈ $9.5    SUI ≈ $5.5
         if symbol == "BTC/USDT":
             min_cost = 10
         else:
@@ -49,39 +41,29 @@ def execute_order(exchange, symbol, signal, balance, leverage=5):
         if order_cost < min_cost:
             return f"NO ORDER — COST {order_cost:.2f} < MIN {min_cost}"
 
-        # ===================
-        # ORDER QUANTITY
-        # ===================
         qty = order_cost / price
 
-        # Bitget parameters
         params = {
             "reduceOnly": False,
             "leverage": leverage,
         }
 
-        # ===================
-        # LONG ORDER
-        # ===================
         if signal == "LONG_ENTRY":
-            order = exchange.create_order(
+            exchange.create_order(
                 symbol=symbol,
                 type='market',
                 side='buy',
-                amount=qty,
+                amount=float(qty),
                 params=params
             )
             return f"ORDER OK — LONG {symbol} qty={qty:.6f}"
 
-        # ===================
-        # SHORT ORDER
-        # ===================
         if signal == "SHORT_ENTRY":
-            order = exchange.create_order(
+            exchange.create_order(
                 symbol=symbol,
                 type='market',
                 side='sell',
-                amount=qty,
+                amount=float(qty),
                 params=params
             )
             return f"ORDER OK — SHORT {symbol} qty={qty:.6f}"
@@ -92,18 +74,7 @@ def execute_order(exchange, symbol, signal, balance, leverage=5):
         return f"ORDER ERROR: {str(e)}"
 
 
-# ===============================
-# GRID WRAPPER: MANAGE ONE SYMBOL
-# ===============================
-
 def trade_symbol(exchange, symbol, balance, grid_range=0.004):
-    """
-    A simple neutral grid:
-    - center price = current price
-    - grid above, grid below
-    - decide LONG or SHORT
-    """
-
     ticker = exchange.fetch_ticker(symbol)
     price = float(ticker['last'])
 
@@ -111,8 +82,6 @@ def trade_symbol(exchange, symbol, balance, grid_range=0.004):
     upper = price * (1 + grid_range)
 
     action = get_grid_action(price, lower, upper)
-
-    # EXECUTE trade if valid
     result = execute_order(exchange, symbol, action, balance)
 
     return {
