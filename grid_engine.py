@@ -1,142 +1,74 @@
-import ccxt
-from decimal import Decimal, ROUND_DOWN
-import config
-import math
+# =========================================
+# GRID ENGINE — REPLACE FULL FILE
+# =========================================
 
-# ===========================================================
-#  EXCHANGE INITIALIZATION (ONLY THIS FIXES 40014 FOREVER)
-# ===========================================================
+import ccxt.async_support as ccxt
+import config
+
+
 def get_exchange():
-    exchange = ccxt.bitget({
+    return ccxt.bitget({
         "apiKey": config.BITGET_API_KEY,
         "secret": config.BITGET_API_SECRET,
         "password": config.BITGET_PASSPHRASE,
         "enableRateLimit": True,
         "options": {
-            "defaultType": "swap",        # 100% REQUIRED (Futures mode)
-            "createMarketBuyOrderRequiresPrice": False,
+            "defaultType": "swap",
         }
     })
-    return exchange
 
 
-# ===========================================================
-#  FETCH BALANCE (USDT FUTURES)
-# ===========================================================
 async def get_balance(exchange):
     try:
         balance = await exchange.fetch_balance()
-        usdt = balance["total"].get("USDT", 0)
-        return float(usdt)
+        return float(balance["total"]["USDT"])
     except:
         return 0.0
 
 
-# ===========================================================
-#  FETCH PRICE (FUTURES)
-# ===========================================================
-async def get_price(exchange, symbol):
-    ticker = await exchange.fetch_ticker(symbol)
-    return float(ticker["last"])
-
-
-# ===========================================================
-#  GRID DECISION ENGINE (you can improve later)
-# ===========================================================
-def decide_action(price):
-    if price <= 0:
-        return "HOLD"
-
-    # very simple neutral fake logic for testing
-    # replace later with AI logic
-    if math.floor(price) % 2 == 0:
-        return "LONG"
-    else:
-        return "SHORT"
-
-
-# ===========================================================
-#  EXECUTE MARKET ORDER (FUTURES)
-# ===========================================================
-async def execute_order(exchange, symbol, side, usdt_amount):
+async def trade_symbol(exchange, symbol, balance):
     try:
-        # get price to compute quantity
         ticker = await exchange.fetch_ticker(symbol)
         price = float(ticker["last"])
 
-        # Compute quantity
-        qty_float = usdt_amount / price
+        # SIMPLE SENSOR — price above moving entry
+        if price % 2 < 1:
+            action = "LONG"
+        else:
+            action = "SHORT"
 
-        # Round to valid precision
-        qty = Decimal(str(qty_float)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+        # no order if small balance
+        if balance < config.MIN_ORDER[symbol]:
+            return {
+                "action": "NO ORDER",
+                "price": price,
+                "result": f"Balance too small: {balance}"
+            }
 
-        # Execute order
+        # build trade
+        cost = config.MIN_ORDER[symbol]
+        amount = cost / price
+
+        params = {}
+
+        # PLACE MARKET ORDER
         order = await exchange.create_order(
             symbol=symbol,
             type="market",
-            side=side.lower(),
-            amount=float(qty),
+            side="buy" if action == "LONG" else "sell",
+            amount=amount,
+            params=params
         )
 
-        return order
-
-    except Exception as e:
-        raise e
-
-
-# ===========================================================
-#  PER-PAIR GRID ACTION LOGIC (USED BY scan & start)
-# ===========================================================
-async def trade_symbol(exchange, symbol, balance):
-    try:
-        price = await get_price(exchange, symbol)
-
-        # REQUIRED: minimum order size per pair
-        min_cost = config.MIN_ORDER_USDT.get(symbol, 10)
-
-        # If no balance, no trades
-        if balance < min_cost:
-            return {
-                "price": price,
-                "action": "NO ORDER",
-                "result": "Insufficient balance"
-            }
-
-        # Decide action
-        action = decide_action(price)
-
-        if action == "HOLD":
-            return {
-                "price": price,
-                "action": "HOLD",
-                "result": "Neutral zone"
-            }
-
-        # Amount to use each trade
-        # Use % of balance defined in config
-        usdt_alloc = (balance * config.RISK_PER_TRADE_PCT) / 100
-
-        if usdt_alloc < min_cost:
-            usdt_alloc = min_cost
-
-        # EXECUTE IF LIVE TRADING ENABLED
-        if config.LIVE_TRADING:
-            order = await execute_order(exchange, symbol, action, usdt_alloc)
-            return {
-                "price": price,
-                "action": action,
-                "result": f"ORDER EXECUTED: {order}"
-            }
-        else:
-            return {
-                "price": price,
-                "action": action,
-                "result": f"(SIMULATION) Would execute {action} with {usdt_alloc:.2f} USDT"
-            }
+        return {
+            "action": action,
+            "price": price,
+            "result": f"ORDER OK: cost={cost}, amount={amount}, id={order['id']}"
+        }
 
     except Exception as e:
         return {
-            "price": 0,
             "action": "ERROR",
+            "price": 0,
             "result": str(e)
         }
