@@ -1,7 +1,3 @@
-# =========================================
-# GRID ENGINE — REPLACE FULL FILE
-# =========================================
-
 import ccxt.async_support as ccxt
 import config
 
@@ -31,44 +27,32 @@ async def trade_symbol(exchange, symbol, balance):
         ticker = await exchange.fetch_ticker(symbol)
         price = float(ticker["last"])
 
-        # SIMPLE SENSOR — price above moving entry
-        if price % 2 < 1:
-            action = "LONG"
-        else:
-            action = "SHORT"
-
-        # no order if small balance
         if balance < config.MIN_ORDER[symbol]:
             return {
                 "action": "NO ORDER",
                 "price": price,
-                "result": f"Balance too small: {balance}"
+                "result": f"Balance {balance} too small",
             }
 
-        # build trade
         cost = config.MIN_ORDER[symbol]
         amount = cost / price
 
-        params = {}
-
-        # PLACE MARKET ORDER
         order = await exchange.create_order(
             symbol=symbol,
             type="market",
-            side="buy" if action == "LONG" else "sell",
+            side="buy",
             amount=amount,
-            params=params
         )
 
         return {
-            "action": action,
+            "action": "LONG",
             "price": price,
-            "result": f"ORDER OK: cost={cost}, amount={amount}, id={order['id']}"
+            "result": f"ORDER OK: cost={cost}, amount={amount}"
         }
 
     except Exception as e:
         return {
             "action": "ERROR",
             "price": 0,
-            "result": str(e)
+            "result": str(e),
         }
