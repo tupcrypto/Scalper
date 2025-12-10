@@ -1,132 +1,125 @@
-# ======================================================
-# grid_engine.py — FINAL CLEAN + SAFE VERSION
-# ======================================================
-
+import math
 import ccxt
-import config
 
-GRID_CENTER = {}
+# ===============================
+# GRID DECISION LOGIC
+# ===============================
+
+def get_grid_action(price, lower, upper):
+    """
+    Decide LONG, SHORT or HOLD based on grid levels.
+    """
+    if price < lower:
+        return "LONG_ENTRY"
+    elif price > upper:
+        return "SHORT_ENTRY"
+    else:
+        return "HOLD"
 
 
-def get_exchange():
+# ===============================
+# EXECUTE ORDER ON BITGET FUTURES (MARKET)
+# ===============================
+
+def execute_order(exchange, symbol, signal, balance, leverage=5):
     try:
-        ex = ccxt.bitget({
-            "apiKey": config.BITGET_API_KEY,
-            "secret": config.BITGET_API_SECRET,
-            "password": config.BITGET_PASSPHRASE,
-            "enableRateLimit": True,
-            "options": {
-                "defaultType": "swap",
-                "createMarketBuyOrderRequiresPrice": False,
-            },
-        })
-        ex.load_markets()
-        return ex
-    except Exception as e:
-        print("EXCHANGE INIT ERROR: " + str(e))
-        return None
+        # No action required
+        if signal not in ["LONG_ENTRY", "SHORT_ENTRY"]:
+            return "NO ORDER"
 
+        ticker = exchange.fetch_ticker(symbol)
+        price = float(ticker['last'])
 
-def get_balance():
-    try:
-        return float(config.ASSUMED_BALANCE_USDT)
-    except:
-        return 0.0
+        # ====================
+        # CAPITAL ALLOCATION
+        # ====================
+        risk_pct = 0.20   # 20% per grid order (adjustable)
+        order_cost = balance * risk_pct
 
+        # =============================================
+        # BITGET MINIMUM FUTURES ORDER COST ENFORCEMENT
+        # =============================================
+        # Based on live exchange rules you confirmed:
+        # BTC ≈ $9.5    SUI ≈ $5.5
+        if symbol == "BTC/USDT":
+            min_cost = 10
+        else:
+            min_cost = 6
 
-def get_price(exchange, symbol):
-    try:
-        t = exchange.fetch_ticker(symbol)
-        return float(t["last"])
-    except Exception as e:
-        print("PRICE ERROR " + symbol + ": " + str(e))
-        return 0.0
+        if order_cost < min_cost:
+            return f"NO ORDER — COST {order_cost:.2f} < MIN {min_cost}"
 
+        # ===================
+        # ORDER QUANTITY
+        # ===================
+        qty = order_cost / price
 
-def check_grid_signal(symbol, price, balance):
-    if price <= 0:
-        return "NO DATA"
-    if balance <= 0:
-        return "NO BALANCE"
+        # Bitget parameters
+        params = {
+            "reduceOnly": False,
+            "leverage": leverage,
+        }
 
-    step = float(config.GRID_STEP_PCT)
+        # ===================
+        # LONG ORDER
+        # ===================
+        if signal == "LONG_ENTRY":
+            order = exchange.create_order(
+                symbol=symbol,
+                type='market',
+                side='buy',
+                amount=qty,
+                params=params
+            )
+            return f"ORDER OK — LONG {symbol} qty={qty:.6f}"
 
-    if symbol not in GRID_CENTER:
-        GRID_CENTER[symbol] = price
-        return "INIT GRID — HOLD"
+        # ===================
+        # SHORT ORDER
+        # ===================
+        if signal == "SHORT_ENTRY":
+            order = exchange.create_order(
+                symbol=symbol,
+                type='market',
+                side='sell',
+                amount=qty,
+                params=params
+            )
+            return f"ORDER OK — SHORT {symbol} qty={qty:.6f}"
 
-    center = GRID_CENTER[symbol]
-    upper = center * (1 + step)
-    lower = center * (1 - step)
-
-    if price >= upper:
-        GRID_CENTER[symbol] = price
-        return "SHORT_ENTRY @ " + str(price)
-
-    if price <= lower:
-        GRID_CENTER[symbol] = price
-        return "LONG_ENTRY @ " + str(price)
-
-    return "HOLD — Neutral zone"
-
-
-def execute_order(exchange, symbol, signal, balance):
-    if "ENTRY" not in signal:
         return "NO ORDER"
 
-    if not config.LIVE_TRADING:
-        return "[SIMULATION] EXECUTED " + signal + " " + symbol
-
-    price = get_price(exchange, symbol)
-    if price <= 0:
-        return "BAD PRICE"
-
-    if symbol.startswith("SUI"):
-        min_cost_usdt = 5.5
-    elif symbol.startswith("BTC"):
-        min_cost_usdt = 9.5
-    else:
-        min_cost_usdt = 10.0
-
-    cost_param = str(min_cost_usdt)
-
-    try:
-        exchange.set_leverage(
-            leverage=5,
-            symbol=symbol,
-            params={"marginCoin": "USDT"},
-        )
-    except:
-        pass
-
-    try:
-        exchange.set_margin_mode(
-            marginMode="isolated",
-            symbol=symbol,
-            params={"marginCoin": "USDT"},
-        )
-    except:
-        pass
-
-    try:
-        side = "buy"
-        if "SHORT_ENTRY" in signal:
-            side = "sell"
-
-        order = exchange.create_order(
-            symbol=symbol,
-            type="market",
-            side=side,
-            amount=None,
-            price=None,
-            params={
-                "marginCoin": "USDT",
-                "cost": cost_param,
-                "force": "normal",
-            },
-        )
-
-        return "ORDER OK: symbol=" + symbol + ", cost=" + cost_param + ", order=" + str(order)
-
     except Exception as e:
-        return "ORDER ERROR: " + str(e)
+        return f"ORDER ERROR: {str(e)}"
+
+
+# ===============================
+# GRID WRAPPER: MANAGE ONE SYMBOL
+# ===============================
+
+def trade_symbol(exchange, symbol, balance, grid_range=0.004):
+    """
+    A simple neutral grid:
+    - center price = current price
+    - grid above, grid below
+    - decide LONG or SHORT
+    """
+
+    ticker = exchange.fetch_ticker(symbol)
+    price = float(ticker['last'])
+
+    lower = price * (1 - grid_range)
+    upper = price * (1 + grid_range)
+
+    action = get_grid_action(price, lower, upper)
+
+    # EXECUTE trade if valid
+    result = execute_order(exchange, symbol, action, balance)
+
+    return {
+        "symbol": symbol,
+        "price": price,
+        "lower": lower,
+        "upper": upper,
+        "action": action,
+        "result": result
+    }
