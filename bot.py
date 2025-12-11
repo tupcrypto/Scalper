@@ -1,232 +1,208 @@
-"""
-FINAL WORKING BOT.PY FOR RENDER
-- No asyncio.run()
-- No manual loop closing
-- Uses python-telegram-bot 20.x Application.run_polling()
-- Fully compatible with JobQueue
-"""
-
-import logging
+# bot.py
+import os
 import asyncio
-from functools import partial
+import logging
+from datetime import datetime
+from typing import Optional
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
 import config
 import grid_engine
 
-logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)s: %(message)s"
-)
+logging.basicConfig(level=logging.DEBUG if config.DEBUG else logging.INFO,
+                    format="%(asctime)s — %(name)s — %(levelname)s — %(message)s")
+LOG = logging.getLogger("tg_bot")
 
-logger = logging.getLogger("BOT")
+# Global to hold background task
+GRID_TASK: Optional[asyncio.Task] = None
+EXCHANGE_INSTANCE = None
 
-##############################
-# GLOBALS
-##############################
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global GRID_TASK, EXCHANGE_INSTANCE
+    user = update.effective_user
+    LOG.info("/start called by %s", user.username if user else "unknown")
 
-exchange = None
-grid_job = None
-grid_running = False
-
-
-##############################
-# EXCHANGE HELPERS (async wrappers)
-##############################
-
-async def get_exchange():
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
-        partial(grid_engine.get_exchange, config.TOOBIT_API_KEY, config.TOOBIT_API_SECRET)
-    )
-
-
-async def fetch_balance(ex):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, partial(grid_engine.fetch_usdt_futures_balance, ex)
-    )
-
-
-async def compute_amount(ex, symbol, budget, leverage):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, partial(grid_engine.compute_order_amount, ex, symbol, budget, leverage)
-    )
-
-
-async def place_order(ex, symbol, side, amount):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, partial(grid_engine.place_market_order, ex, symbol, side, amount)
-    )
-
-
-##############################
-# COMMAND HANDLERS
-##############################
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global exchange, grid_running, grid_job
-
-    if grid_running:
+    if GRID_TASK and (not GRID_TASK.done()):
         await update.message.reply_text("Bot already running.")
         return
 
-    # Initialize exchange
-    if exchange is None:
-        try:
-            exchange = await get_exchange()
-            await asyncio.get_event_loop().run_in_executor(None, exchange.load_markets)
-        except Exception as e:
-            msg = f"❌ Exchange init failed: {e}"
-            logger.exception(msg)
-            await update.message.reply_text(msg)
-            return
-
-    grid_running = True
-    await update.message.reply_text("BOT STARTED — GRID RUNNING")
-
-    # Start background loop
-    grid_job = context.job_queue.run_repeating(
-        grid_loop,
-        interval=config.GRID_LOOP_SECONDS,
-        first=1,
-        name="grid_loop"
-    )
-
-
-async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global grid_running, grid_job
-    if not grid_running:
-        await update.message.reply_text("Bot already stopped.")
+    # init exchange
+    try:
+        EXCHANGE_INSTANCE = await grid_engine.get_exchange()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Exchange init failed: {e}")
+        LOG.exception("exchange init")
         return
 
-    grid_running = False
-    if grid_job:
-        grid_job.schedule_removal()
-        grid_job = None
+    # spawn background loop
+    GRID_TASK = asyncio.create_task(grid_loop(context))
+    await update.message.reply_text(f"BOT STARTED — GRID RUNNING\nPairs: {', '.join(config.PAIRS)}")
 
-    await update.message.reply_text("Bot stopped.")
-
-
-async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global exchange
-
-    if exchange is None:
-        exchange = await get_exchange()
-        await asyncio.get_event_loop().run_in_executor(None, exchange.load_markets)
-
-    bal = await fetch_balance(exchange)
-    msg = [f"SCAN — Balance: {bal:.2f} USDT"]
-
-    for sym in config.PAIRS:
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global GRID_TASK, EXCHANGE_INSTANCE
+    LOG.info("/stop called")
+    if GRID_TASK:
+        GRID_TASK.cancel()
         try:
-            ticker = await asyncio.get_event_loop().run_in_executor(
-                None, partial(exchange.fetch_ticker, sym)
-            )
-            price = float(ticker["last"])
-            msg.append(f"{sym}: {price}")
-        except Exception as e:
-            msg.append(f"{sym}: ERROR {e}")
+            await GRID_TASK
+        except asyncio.CancelledError:
+            pass
+        GRID_TASK = None
+    # close exchange connection
+    if EXCHANGE_INSTANCE:
+        try:
+            await grid_engine.close_exchange(EXCHANGE_INSTANCE)
+        except Exception:
+            pass
+        EXCHANGE_INSTANCE = None
+    await update.message.reply_text("BOT STOPPED — Grid stopped and exchange closed")
 
-    await update.message.reply_text("\n".join(msg))
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # On-demand single scan
+    LOG.info("/scan called")
+    try:
+        exchange = await grid_engine.get_exchange()
+        bal = await grid_engine.fetch_usdt_balance(exchange)
+        msg = [f"SCAN DEBUG — BALANCE: {bal:.2f} USDT\n"]
+        for sym in config.PAIRS:
+            price = await grid_engine.fetch_price(exchange, sym)
+            if price is None:
+                msg.append(f"{sym}: price=N/A")
+            else:
+                msg.append(f"{sym}: price={price:.6f}")
+        await exchange.close()
+        await update.message.reply_text("\n".join(msg))
+    except Exception as e:
+        LOG.exception("scan error")
+        await update.message.reply_text(f"SCAN ERROR:\n{e}")
 
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # report status
+    running = GRID_TASK and (not GRID_TASK.done())
+    await update.message.reply_text(f"Grid running: {bool(running)}")
 
-##############################
-# GRID LOOP
-##############################
-
+# main grid loop
 async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
-    global exchange, grid_running
+    """
+    Very simple loop per pair:
+     - get balance
+     - if balance sufficient, compute usdt spend and attempt to place a LIMIT entry order
+     - otherwise report HOLD/NO ORDER
+    This is a simple example — adapt to your real grid logic.
+    """
+    global EXCHANGE_INSTANCE
+    try:
+        if EXCHANGE_INSTANCE is None:
+            EXCHANGE_INSTANCE = await grid_engine.get_exchange()
+        exchange = EXCHANGE_INSTANCE
 
-    if not grid_running:
-        return
+        while True:
+            try:
+                total_usdt = await grid_engine.fetch_usdt_balance(exchange)
+                LOG.info("GRID LOOP — BALANCE: %s USDT", total_usdt)
+                for sym in config.PAIRS:
+                    price = await grid_engine.fetch_price(exchange, sym)
+                    if price is None:
+                        await notify(context, f"{sym}: price N/A")
+                        continue
 
-    if exchange is None:
-        exchange = await get_exchange()
-        await asyncio.get_event_loop().run_in_executor(None, exchange.load_markets)
+                    # compute spend
+                    spend = grid_engine.compute_usdt_spend(total_usdt)
+                    if spend < config.MIN_ORDER_USDT:
+                        await notify(context, f"[GRID] {sym} — NO ORDER @ {price:.4f}\nBalance {total_usdt:.2f} too small")
+                        continue
 
-    # Fetch balance
-    balance = await fetch_balance(exchange)
+                    # Very simple decision: if recent price moved up a bit, hold; else attempt small entry
+                    # (Replace with your actual signal logic)
+                    # For demo, we will attempt an entry every time if scan-only isn't set
+                    if config.SCAN_ONLY:
+                        await notify(context, f"[GRID] {sym} — HOLD (scan-only) @ {price:.4f}")
+                        continue
 
-    symbols = config.PAIRS
-    per_budget = (balance * (config.MAX_CAPITAL_PCT / 100)) / len(symbols)
+                    # calculate limit price with offset for buy
+                    buy_price = round(price * (1.0 + config.PRICE_OFFSET_BUY_PCT), 8)
+                    sell_price = round(price * (1.0 - config.PRICE_OFFSET_SELL_PCT), 8)
 
-    for sym in symbols:
+                    try:
+                        # attempt a buy limit order using a fraction of spend to avoid big usage
+                        per_order_usdt = max(config.MIN_ORDER_USDT, spend * 0.25)
+                        order = await grid_engine.place_limit_order(exchange, sym, "buy", per_order_usdt, buy_price)
+                        await notify(context, f"[GRID] {sym} — LONG_ENTRY @ {buy_price}\nOrder id: {order.get('id')}")
+                    except Exception as e:
+                        LOG.exception("Order placement error")
+                        await notify(context, f"ORDER ERROR: {e}")
+
+                await asyncio.sleep(config.GRID_LOOP_SECONDS)
+            except asyncio.CancelledError:
+                LOG.info("grid_loop cancelled")
+                break
+            except Exception as e:
+                LOG.exception("grid loop exception")
+                await notify(context, f"[GRID LOOP ERROR]\n{e}")
+                await asyncio.sleep(5)
+    finally:
+        # close exchange on exit
         try:
-            ticker = await asyncio.get_event_loop().run_in_executor(
-                None, partial(exchange.fetch_ticker, sym)
-            )
-            price = float(ticker["last"])
-        except Exception as e:
-            await context.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"[GRID] {sym} — ticker error {e}"
-            )
-            continue
+            if EXCHANGE_INSTANCE:
+                await grid_engine.close_exchange(EXCHANGE_INSTANCE)
+        except Exception:
+            pass
 
-        if per_budget < config.MIN_ORDER_USDT:
-            await context.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"[GRID] {sym} — NO ORDER @ {price} (budget too small)"
-            )
-            continue
+# helper to send messages to owner chat (basic)
+async def notify(context: ContextTypes.DEFAULT_TYPE, text: str):
+    try:
+        # send to the chat that triggered the command if available else do nothing
+        # context._chat_id may not be available; safe attempt:
+        if context and getattr(context, "application", None):
+            # send to bot admin: we don't know owner id; send to last update chat if present
+            # fallback: do nothing if not available
+            # when grid_loop is started from /start, context contains the chat
+            chat_id = None
+            # Try to find a chat id in context
+            if context.job and context.job.chat_id:
+                chat_id = context.job.chat_id
+            # fallback: first handler's chat stored in application.bot_data
+            chat_id = context.application.bot_data.get("last_chat_id") or chat_id
+            if not chat_id:
+                # try to use the first chat in update history (best-effort)
+                pass
+            if chat_id:
+                await context.application.bot.send_message(chat_id=chat_id, text=text)
+                return
+        LOG.info("notify: %s", text)
+    except Exception:
+        LOG.exception("notify failed")
 
-        # Compute amount
-        try:
-            amount = await compute_amount(exchange, sym, per_budget, config.LEVERAGE)
-        except Exception as e:
-            await context.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"[GRID] {sym} — amount error {e}"
-            )
-            continue
-
-        # Example logic: always BUY for now
-        side = "buy"
-
-        await context.bot.send_message(
-            chat_id=config.TELEGRAM_CHAT_ID,
-            text=f"[GRID] {sym} — BUY ENTRY @ {price} amount={amount}"
-        )
-
-        if not config.LIVE_TRADING:
-            await context.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"[SIMULATION] Would buy {amount} {sym}"
-            )
-            continue
-
-        # Execute order
-        try:
-            order = await place_order(exchange, sym, side, amount)
-            await context.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"ORDER EXECUTED:\n{order}"
-            )
-        except Exception as e:
-            await context.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"ORDER ERROR: {e}"
-            )
-
-
-##############################
-# ENTRYPOINT (NO ASYNCIO.RUN)
-##############################
+async def record_last_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # store last chat id so background can notify
+    try:
+        chat_id = update.effective_chat.id
+        context.application.bot_data["last_chat_id"] = chat_id
+    except Exception:
+        pass
 
 def main():
-    application = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", config.TELEGRAM_BOT_TOKEN)
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN missing in env")
 
-    application.add_handler(CommandHandler("start", cmd_start))
-    application.add_handler(CommandHandler("stop", cmd_stop))
-    application.add_handler(CommandHandler("scan", cmd_scan))
+    app = ApplicationBuilder().token(token).build()
 
-    logger.info("BOT IS RUNNING...")
-    application.run_polling()
+    # command handlers
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("status", status_command))
 
+    # record chat id for notifications
+    app.add_handler(CommandHandler("start", record_last_chat))  # also called when /start runs
+    app.add_handler(CommandHandler("scan", record_last_chat))
+    app.add_handler(CommandHandler("status", record_last_chat))
+
+    LOG.info("==> Running 'python3 bot.py'")
+    app.run_polling()  # blocking
 
 if __name__ == "__main__":
     main()
