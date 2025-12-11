@@ -1,153 +1,154 @@
 # grid_engine.py
-import os
-import asyncio
+# Full file - exchange helpers for the bot.
+
+import ccxt
+import time
+import math
+from decimal import Decimal, InvalidOperation
 import logging
-from decimal import Decimal, InvalidOperation, ROUND_DOWN, getcontext
-
-import ccxt.async_support as ccxt
-
-from typing import Dict, Any, Optional
 import config
 
-getcontext().prec = 18
+log = logging.getLogger("grid_engine")
+log.setLevel(logging.DEBUG if config.VERBOSE else logging.INFO)
 
-LOG = logging.getLogger("grid_engine")
-
-# Build exchange client (async)
-async def get_exchange():
+def get_exchange():
+    """
+    Returns a ccxt exchange instance configured with keys from config.
+    This is synchronous (ccxt.sync).
+    """
     ex_id = config.EXCHANGE_ID
-    apiKey = os.getenv("EXCHANGE_API_KEY", config.EXCHANGE_API_KEY)
-    secret = os.getenv("EXCHANGE_API_SECRET", config.EXCHANGE_API_SECRET)
-    password = os.getenv("EXCHANGE_API_PASSWORD", config.EXCHANGE_API_PASSWORD)
+    if not ex_id:
+        raise RuntimeError("EXCHANGE_ID not set in config.py or env")
 
-    if not apiKey or not secret:
-        raise RuntimeError("Exchange API key/secret are not set in env")
+    if ex_id not in ccxt.exchanges:
+        raise RuntimeError(f"ccxt does not list '{ex_id}' in this environment. Available: {', '.join(ccxt.exchanges)}")
 
-    # instantiate
-    exchange_class = getattr(ccxt, ex_id, None)
-    if exchange_class is None:
-        # ccxt provides exchange in ccxt.<id>; but safe fallback
-        try:
-            exchange_class = ccxt.__dict__[ex_id]
-        except Exception:
-            raise RuntimeError(f"ccxt does not list '{ex_id}' in this environment. Available: {', '.join(sorted(ccxt.exchanges))}")
+    ExchangeClass = getattr(ccxt, ex_id)
+    opts = {}
+    if config.CREATE_MARKET_BUY_REQUIRES_PRICE:
+        opts["createMarketBuyOrderRequiresPrice"] = True
 
-    exchange = exchange_class({
-        "apiKey": apiKey,
-        "secret": secret,
-        "password": password,
+    # merge in extras from config.EXCHANGE_EXTRA (empty dict by default)
+    opts.update(config.EXCHANGE_EXTRA or {})
+
+    exchange = ExchangeClass({
+        "apiKey": config.EXCHANGE_API_KEY,
+        "secret": config.EXCHANGE_API_SECRET,
+        "password": config.EXCHANGE_API_PASSPHRASE or None,
         "enableRateLimit": True,
-        # avoid aggressive timeouts
-        "timeout": 20000,
-        "options": {
-            # default: use limit orders to be broadly compatible
-            "createMarketBuyOrderRequiresPrice": False,
-        },
+        **opts,
     })
-
-    # Optionally, if BloFin test host is required uncomment and set url
-    # if ex_id == "blofin" and os.getenv("BLOFIN_USE_DEMO", "false").lower() in ("1","true"):
-    #     exchange.urls['api'] = {'rest': 'https://demo-trading-openapi.blofin.com'}
-
-    await exchange.load_markets()
-    LOG.info("Exchange loaded: %s", ex_id)
+    # Optional: set verbose exchange-level logging
+    # exchange.verbose = True
     return exchange
 
-# Safe helper to get USDT futures balance (tries common shapes)
-async def fetch_usdt_balance(exchange) -> float:
+def safe_decimal(x):
     try:
-        bal = await exchange.fetch_balance(params={})
-        # ccxt often returns balances under 'total'
-        # we try multiple locations
-        for key in ("USDT", "TUSD", "USD"):
-            if isinstance(bal, dict) and key in bal:
-                sub = bal[key]
-                if isinstance(sub, dict):
-                    val = sub.get("total") or sub.get("free") or sub.get("used")
-                    if val is not None:
-                        return float(val)
-        # fallback: try top-level 'total' mapping
-        total = bal.get("total") if isinstance(bal, dict) else None
-        if isinstance(total, dict):
-            for k in ("USDT", "USD", "TUSD"):
-                if k in total and total[k] is not None:
-                    return float(total[k])
-        # sometimes fetch_balance returns a float or nested structure
-        # as final fallback, try to find any 'USDT' in json string
-        if isinstance(bal, dict):
-            if "info" in bal and isinstance(bal["info"], dict):
-                # market-specific structures (best effort)
-                info = bal["info"]
-                # try common paths
-                for path in ("availableMargin", "totalBalance", "usdtBalance", "balance"):
-                    if path in info:
-                        try:
-                            return float(info[path])
-                        except Exception:
-                            pass
-        LOG.debug("fetch_balance raw: %s", bal)
-    except Exception as e:
-        LOG.exception("fetch_usdt_balance error: %s", e)
-    return 0.0
+        return Decimal(str(x))
+    except (InvalidOperation, TypeError):
+        return Decimal("0")
 
-# Helper: fetch ticker price
-async def fetch_price(exchange, symbol: str) -> Optional[float]:
+def get_assumed_balance(exchange, quote_asset=None):
+    """
+    Fetch balance and return available quote asset amount (e.g., USDT).
+    Uses synchronous fetch_balance; caller should call in executor (asyncio.to_thread).
+    """
+    quote = quote_asset or config.QUOTE_ASSET
+    bal = exchange.fetch_balance()
+    # Some exchanges return futures balances under ['info'] or under ['total'] / ['free'] / ['used']
+    # We'll try common places.
+    # Try futures first (if exchange supports 'info' key with 'positions' etc).
+    amount = 0
+    # prefer free quote balance
+    if isinstance(bal, dict):
+        # many ccxt builds return {'total': {...}, 'free': {...}}
+        for key in ("free", "total", "info"):
+            if key in bal and isinstance(bal[key], dict):
+                bucket = bal[key]
+                if quote in bucket:
+                    amount = bucket[quote]
+                    break
+        # fallback: top-level key equal to the symbol
+        if amount == 0:
+            if quote in bal:
+                try:
+                    amount = bal[quote]
+                except Exception:
+                    amount = 0
+
     try:
-        ticker = await exchange.fetch_ticker(symbol)
-        price = ticker.get("last") if isinstance(ticker, dict) else None
-        return float(price) if price is not None else None
+        return float(amount or 0.0)
+    except Exception:
+        return 0.0
+
+def fetch_price(exchange, symbol):
+    """
+    Fetch latest mid/last price for symbol using ticker if available.
+    Synchronous; caller should run in executor.
+    """
+    try:
+        ticker = exchange.fetch_ticker(symbol)
+        # ticker may have 'last' or 'close'
+        p = ticker.get("last") or ticker.get("close") or ticker.get("price") or ticker.get("bid")
+        if p is None:
+            # some exchanges return string price inside ticker['info']
+            p = ticker.get("info", {}).get("lastPrice") or ticker.get("info", {}).get("price")
+        return float(p) if p is not None else None
     except Exception as e:
-        LOG.debug("fetch_price error for %s: %s", symbol, e)
+        log.exception("fetch_price error for %s: %s", symbol, e)
         return None
 
-# Determine how much USDT to spend per trade
-def compute_usdt_spend(total_usdt: float) -> float:
-    spend = total_usdt * float(config.MAX_BALANCE_USAGE_PCT)
-    # ensure at least MIN_ORDER_USDT
-    if spend < config.MIN_ORDER_USDT:
-        return 0.0
-    return float(spend)
-
-# Create a limit order with a small price offset (avoids market-order API differences)
-async def place_limit_order(exchange, symbol: str, side: str, usdt_amount: float, price: float, params: Optional[dict] = None) -> Dict[str, Any]:
+def calculate_amount_for_market(balance_quote, price, allocation=config.ALLOCATION_PER_PAIR, leverage=None):
     """
-    side: 'buy' or 'sell'
-    usdt_amount: how much quote currency (USDT) to spend (for buys) or receive (for sells)
-    price: limit price (in quote per base)
-    Returns ccxt order response or raises
+    Given quote balance (e.g., USDT) and price, compute base-asset amount to buy.
+    Return float amount (in base currency).
     """
-    params = params or {}
     try:
-        # compute base amount = usdt_amount / price
-        amount = Decimal(str(usdt_amount)) / Decimal(str(price))
-        # many exchanges require rounding to market precision; attempt safe rounding
-        markets = exchange.markets
-        market = markets.get(symbol)
-        if market:
-            precision = market.get("precision", {}).get("amount")
-            if precision is not None:
-                quant = Decimal(1) / (Decimal(10) ** Decimal(precision))
-                amount = (amount // quant) * quant
-        # final float
-        amount_f = float(amount)
-        if amount_f <= 0:
-            raise RuntimeError("Computed order amount <= 0")
-
-        LOG.info("Placing LIMIT %s %s @ %s amount=%s (usdt=%s)", side.upper(), symbol, price, amount_f, usdt_amount)
-        order = await exchange.create_order(symbol, "limit", side, amount_f, price, params)
-        return order
-    except InvalidOperation as e:
-        LOG.exception("Decimal error when computing order amount: %s", e)
-        raise
+        bal = Decimal(str(balance_quote))
+        allocation = Decimal(str(allocation))
+        price_d = Decimal(str(price))
+        if price_d <= 0 or bal <= 0:
+            return 0.0
+        use = bal * allocation
+        # If leverage (futures) is provided, effective buying power grows:
+        if leverage and int(leverage) > 1:
+            use = use * Decimal(int(leverage))
+        amount_base = (use / price_d)
+        # round down to sensible precision - many exchanges reject too many decimals
+        # We'll return a float; caller should format if specific precision required.
+        return float(amount_base)
     except Exception as e:
-        LOG.exception("place_limit_order failed: %s", e)
-        raise
+        log.exception("calculate_amount error: %s", e)
+        return 0.0
 
-# Close exchange connections cleanly
-async def close_exchange(exchange):
+def execute_order(exchange, symbol, side, amount, price=None, order_type="market"):
+    """
+    Execute order (synchronous). For market orders, price is typically None.
+    Returns exchange.create_order result or raises.
+    """
+    # Safety: if LIVE_TRADING is False, don't actually send the order.
+    if not config.LIVE_TRADING:
+        log.info(f"SIMULATION mode: would place {side} {symbol} amount={amount} price={price} type={order_type}")
+        return {"simulated": True, "symbol": symbol, "side": side, "amount": amount, "price": price, "type": order_type}
+
+    if amount is None or amount <= 0:
+        raise ValueError("Amount must be > 0 to execute order")
+
+    # Many exchanges want 'amount' in base asset for market orders.
+    # Others (some derivatives) want cost in quote currency. We try base-asset approach by default.
     try:
-        await exchange.close()
-    except Exception:
-        pass
+        if order_type == "market":
+            # For some exchanges, create_market_buy_order requires price to compute cost.
+            # We rely on ccxt wrapper; pass amount and type 'market'.
+            order = exchange.create_order(symbol, "market", side, amount)
+        else:
+            # limit order
+            if price is None:
+                raise ValueError("limit orders require price")
+            order = exchange.create_order(symbol, "limit", side, amount, price)
+        return order
+    except Exception as e:
+        # bubble up for caller to log & react to
+        raise
 
 
