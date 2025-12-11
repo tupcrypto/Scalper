@@ -9,6 +9,16 @@ import html
 RUNNING = False
 
 # ------------------------------------
+#   /markets  (NEW)
+# ------------------------------------
+async def markets(update, context):
+    ex = await grid_engine.get_exchange()
+    mk = list(ex.markets.keys())
+    await update.message.reply_text("\n".join(mk))
+    await ex.close()
+
+
+# ------------------------------------
 #   /start
 # ------------------------------------
 async def start(update, context):
@@ -17,7 +27,6 @@ async def start(update, context):
     await update.message.reply_text(
         f"BOT STARTED — GRID RUNNING\nPairs: {', '.join(config.PAIRS)}"
     )
-
     asyncio.create_task(grid_loop(context.bot))
 
 
@@ -44,7 +53,6 @@ async def scan(update, context):
         reply += f"{s}: price={price}\n"
 
     await update.message.reply_text(reply)
-
     await exchange.close()
 
 
@@ -80,6 +88,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("markets", markets))  # NEW
     app.run_polling()
 
 
