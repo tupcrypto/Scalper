@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import ccxt
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -10,80 +9,86 @@ import grid_engine
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -----------------------------
-# TELEGRAM COMMANDS
-# -----------------------------
+
+# ------------------------------------------------
+# /start
+# ------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("BOT STARTED — GRID RUNNING")
     context.application.job_queue.run_repeating(grid_loop, interval=config.GRID_INTERVAL, first=1)
-    
 
+
+# ------------------------------------------------
+# /scan
+# ------------------------------------------------
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    balance = await grid_engine.get_balance()
-    prices = {}
-
-    for sym in config.PAIRS:
-        try:
-            prices[sym] = await grid_engine.get_price(sym)
-        except:
-            prices[sym] = "N/A"
-
-    msg = f"SCAN DEBUG — BALANCE: {balance:.2f} USDT\n\n"
+    bal = await grid_engine.get_balance()
+    msg = f"SCAN — Balance: {bal:.2f} USDT\n\n"
 
     for s in config.PAIRS:
-        msg += f"{s}: price={prices[s]}\n"
+        price = await grid_engine.get_price(s)
+        msg += f"{s}: Price = {price}\n"
 
     await update.message.reply_text(msg)
 
 
+# ------------------------------------------------
+# /markets  (NEW)
+# ------------------------------------------------
+async def markets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mks = await grid_engine.get_markets()
+    if not mks:
+        await update.message.reply_text("No markets loaded.")
+        return
+
+    text = "Available Markets (first 50):\n\n"
+    text += "\n".join(mks[:50])
+
+    await update.message.reply_text(text)
+
+
+# ------------------------------------------------
+# /stop
+# ------------------------------------------------
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.job_queue.stop()
     await update.message.reply_text("🛑 GRID STOPPED")
 
 
-# -----------------------------
+# ------------------------------------------------
 # GRID LOOP
-# -----------------------------
+# ------------------------------------------------
 async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
     try:
-        for sym in config.PAIRS:
-            price = await grid_engine.get_price(sym)
+        for s in config.PAIRS:
+            price = await grid_engine.get_price(s)
             if price is None:
-                logger.error(f"[GRID] {sym} — price N/A")
+                logger.error(f"[GRID] {s} PRICE N/A")
                 continue
 
-            await grid_engine.run_grid(sym, price)
+            await grid_engine.run_grid(s, price)
 
     except Exception as e:
         logger.error(f"[GRID LOOP ERROR] {e}")
 
 
-# -----------------------------
-# MAIN ENTRYPOINT (Worker Safe)
-# -----------------------------
+# ------------------------------------------------
+# MAIN LOOP (BACKGROUND WORKER SAFE)
+# ------------------------------------------------
 async def main():
-    application = (
-        ApplicationBuilder()
-        .token(config.TELEGRAM_BOT_TOKEN)
-        .build()
-    )
+    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("scan", scan))
-    application.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("markets", markets))
+    app.add_handler(CommandHandler("stop", stop))
 
-    # Start polling inside background worker
-    logger.info("📡 Telegram bot polling started…")
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
 
-    # KEEP WORKER ALIVE FOREVER
-    await asyncio.Event().wait()
+    await asyncio.Event().wait()   # Keep alive
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped manually")
+    asyncio.run(main())
