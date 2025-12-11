@@ -1,3 +1,4 @@
+# bot.py
 import asyncio
 import logging
 from telegram import Update
@@ -10,84 +11,81 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# ------------------------------------------------
-# /start
-# ------------------------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT STARTED — GRID RUNNING")
-    context.application.job_queue.run_repeating(grid_loop, interval=config.GRID_INTERVAL, first=1)
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"BOT STARTED — GRID RUNNING\nPairs: {', '.join([b+'USDT' for b in config.PAIRS_BASE])}")
+    # run grid loop as job repeating
+    context.application.job_queue.run_repeating(grid_loop_job, interval=config.GRID_LOOP_SECONDS, first=1, name="grid_loop")
 
 
-# ------------------------------------------------
-# /scan
-# ------------------------------------------------
-async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # stop repeating job(s)
+    jobs = context.application.job_queue.get_jobs_by_name("grid_loop")
+    for j in jobs:
+        j.schedule_removal()
+    await update.message.reply_text("BOT STOPPED — Grid jobs removed")
+
+
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = await grid_engine.get_balance()
-    msg = f"SCAN — Balance: {bal:.2f} USDT\n\n"
-
-    for s in config.PAIRS:
-        price = await grid_engine.get_price(s)
-        msg += f"{s}: Price = {price}\n"
-
+    msg = f"SCAN DEBUG — BALANCE: {bal:.2f} USDT\n\n"
+    # for each base, resolve futures market and price
+    for base in config.PAIRS_BASE:
+        m = await grid_engine.get_market_symbol_for_base(base)
+        if m is None:
+            msg += f"{base}USDT: market not found\n"
+            continue
+        price = await grid_engine.get_price(m)
+        msg += f"{m}: price={price}\n"
     await update.message.reply_text(msg)
 
 
-# ------------------------------------------------
-# /markets  (NEW)
-# ------------------------------------------------
-async def markets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mks = await grid_engine.get_markets()
+async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mks = await grid_engine.get_markets_list()
     if not mks:
-        await update.message.reply_text("No markets loaded.")
+        await update.message.reply_text("No markets available or failed to load.")
         return
-
-    text = "Available Markets (first 50):\n\n"
-    text += "\n".join(mks[:50])
-
+    text = "Markets (first 50):\n\n" + "\n".join(mks[:50])
     await update.message.reply_text(text)
 
 
-# ------------------------------------------------
-# /stop
-# ------------------------------------------------
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.application.job_queue.stop()
-    await update.message.reply_text("🛑 GRID STOPPED")
+async def grid_loop_job(context: ContextTypes.DEFAULT_TYPE):
+    # for each base in config, resolve market and then run grid
+    for base in config.PAIRS_BASE:
+        symbol = await grid_engine.get_market_symbol_for_base(base)
+        if not symbol:
+            logger.error(f"[GRID LOOP] market not found for base {base}")
+            continue
+        price = await grid_engine.get_price(symbol)
+        if price is None:
+            logger.error(f"[GRID LOOP] price N/A for {symbol}")
+            continue
+        # run grid logic
+        await grid_engine.run_grid_for_symbol(symbol, price)
 
 
-# ------------------------------------------------
-# GRID LOOP
-# ------------------------------------------------
-async def grid_loop(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        for s in config.PAIRS:
-            price = await grid_engine.get_price(s)
-            if price is None:
-                logger.error(f"[GRID] {s} PRICE N/A")
-                continue
-
-            await grid_engine.run_grid(s, price)
-
-    except Exception as e:
-        logger.error(f"[GRID LOOP ERROR] {e}")
-
-
-# ------------------------------------------------
-# MAIN LOOP (BACKGROUND WORKER SAFE)
-# ------------------------------------------------
 async def main():
+    # build telegram application
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("scan", scan))
-    app.add_handler(CommandHandler("markets", markets))
-    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("markets", markets_command))
 
+    # initialize and run
     await app.initialize()
     await app.start()
+    # start polling (non-blocking)
     await app.updater.start_polling()
 
-    await asyncio.Event().wait()   # Keep alive
+    # keep the program alive until killed
+    try:
+        await asyncio.Event().wait()
+    finally:
+        # cleanup: stop updater and close exchange
+        await app.updater.stop()
+        await app.stop()
+        await grid_engine.close_exchange()
 
 
 if __name__ == "__main__":
