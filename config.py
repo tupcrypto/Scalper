@@ -1,21 +1,33 @@
+# config.py
 import os
+from typing import List
+
+# Exchange selection: 'blofin'
+EXCHANGE_ID = os.getenv("EXCHANGE_ID", "blofin")
+
+# API credentials for the exchange
+EXCHANGE_API_KEY = os.getenv("EXCHANGE_API_KEY", "")
+EXCHANGE_API_SECRET = os.getenv("EXCHANGE_API_SECRET", "")
+EXCHANGE_API_PASSWORD = os.getenv("EXCHANGE_API_PASSWORD", "")  # some exchanges require
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # numeric chat id or your user id
 
-# Toobit (set these as Render env vars)
-TOOBIT_API_KEY = os.getenv("TOOBIT_API_KEY", "")
-TOOBIT_API_SECRET = os.getenv("TOOBIT_API_SECRET", "")
+# Trading pairs (comma-separated env var)
+PAIRS: List[str] = [p.strip().upper() for p in os.getenv("PAIRS", "BTC/USDT,SUI/USDT").split(",") if p.strip()]
 
-# Trading
-PAIRS = os.getenv("PAIRS", "BTC/USDT,SUI/USDT").split(",")   # comma separated
-LEVERAGE = int(os.getenv("LEVERAGE", "3"))
-MAX_CAPITAL_PCT = float(os.getenv("MAX_CAPITAL_PCT", "25"))   # percent of balance to use total
-MIN_ORDER_USDT = float(os.getenv("MIN_ORDER_USDT", "6.0"))    # minimum allowed order cost in USDT per exchange
+# Per-pair settings
+LEVERAGE = int(os.getenv("LEVERAGE", "3"))  # max allowed leverage (if used on exchange)
+MIN_ORDER_USDT = float(os.getenv("MIN_ORDER_USDT", "6.0"))  # minimum USD (quote) to spend per order
+MAX_BALANCE_USAGE_PCT = float(os.getenv("MAX_BALANCE_USAGE_PCT", "0.5"))  # fraction of total USDT for trading (0-1)
+
+# Trading / grid loop settings
 GRID_LOOP_SECONDS = int(os.getenv("GRID_LOOP_SECONDS", "30"))
-LIVE_TRADING = os.getenv("LIVE_TRADING", "0") == "1"
+SCAN_ONLY = os.getenv("SCAN_ONLY", "false").lower() in ("1", "true", "yes")
 
-# Bot behavior
-MODE = os.getenv("MODE", "PI_ONEX")  # just a label
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+# Price slippage / order offsets (for limit orders)
+PRICE_OFFSET_BUY_PCT = float(os.getenv("PRICE_OFFSET_BUY_PCT", "0.001"))   # 0.1% above market for buy (limit)
+PRICE_OFFSET_SELL_PCT = float(os.getenv("PRICE_OFFSET_SELL_PCT", "0.001")) # 0.1% below market for sell (limit)
+
+# Logging / debug
+DEBUG = os.getenv("DEBUG", "true").lower() in ("1", "true", "yes")
