@@ -1,96 +1,129 @@
 # bot.py
 import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler
+import html
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+)
 import config
 import grid_engine
-import traceback
-import html
+
 
 RUNNING = False
+APP = None
 
-# ------------------------------------
-#   /markets  (NEW)
-# ------------------------------------
+
+# ------------------------------------------------------
+# /markets  — lists all available Blofin markets
+# ------------------------------------------------------
 async def markets(update, context):
-    ex = await grid_engine.get_exchange()
-    mk = list(ex.markets.keys())
-    await update.message.reply_text("\n".join(mk))
-    await ex.close()
+    try:
+        exchange = await grid_engine.get_exchange()
+        markets = list(exchange.markets.keys())
+        await update.message.reply_text(
+            "Blofin Markets:\n\n" + "\n".join(markets[:200])
+        )
+        await exchange.close()
+    except Exception as e:
+        await update.message.reply_text(f"MARKETS ERROR:\n{html.escape(str(e))}")
 
 
-# ------------------------------------
-#   /start
-# ------------------------------------
+# ------------------------------------------------------
+# /scan — quick check
+# ------------------------------------------------------
+async def scan(update, context):
+    try:
+        exchange = await grid_engine.get_exchange()
+        bal = await grid_engine.get_futures_balance(exchange)
+        msg = f"SCAN DEBUG BALANCE: {bal}\n\n"
+
+        for sym in config.PAIRS:
+            price = await grid_engine.get_price(exchange, sym)
+            msg += f"{sym}: {price}\n"
+
+        await update.message.reply_text(msg)
+        await exchange.close()
+
+    except Exception as e:
+        await update.message.reply_text(f"SCAN ERROR:\n{html.escape(str(e))}")
+
+
+# ------------------------------------------------------
+# /start — begin grid
+# ------------------------------------------------------
 async def start(update, context):
     global RUNNING
     RUNNING = True
+
     await update.message.reply_text(
-        f"BOT STARTED — GRID RUNNING\nPairs: {', '.join(config.PAIRS)}"
+        f"BOT STARTED — GRID RUNNING\nPairs: {config.PAIRS}"
     )
+
     asyncio.create_task(grid_loop(context.bot))
 
 
-# ------------------------------------
-#   /stop
-# ------------------------------------
+# ------------------------------------------------------
+# /stop — stop grid
+# ------------------------------------------------------
 async def stop(update, context):
     global RUNNING
     RUNNING = False
     await update.message.reply_text("BOT STOPPED.")
 
 
-# ------------------------------------
-#   /scan
-# ------------------------------------
-async def scan(update, context):
-    exchange = await grid_engine.get_exchange()
-    bal = await grid_engine.get_futures_balance(exchange)
-
-    reply = f"SCAN DEBUG — BALANCE: {bal} USDT\n\n"
-
-    for s in config.PAIRS:
-        price = await grid_engine.get_price(exchange, s)
-        reply += f"{s}: price={price}\n"
-
-    await update.message.reply_text(reply)
-    await exchange.close()
-
-
-# ------------------------------------
-#   GRID LOOP
-# ------------------------------------
+# ------------------------------------------------------
+# GRID LOOP
+# ------------------------------------------------------
 async def grid_loop(bot):
     global RUNNING
+    await bot.send_message(config.TELEGRAM_CHAT_ID, "GRID LOOP ACTIVE")
 
     while RUNNING:
         try:
             exchange = await grid_engine.get_exchange()
             bal = await grid_engine.get_futures_balance(exchange)
 
-            for s in config.PAIRS:
-                result = await grid_engine.run_grid(exchange, s, bal)
-                await bot.send_message(config.TELEGRAM_CHAT_ID, result)
+            for sym in config.PAIRS:
+                try:
+                    result = await grid_engine.run_grid(exchange, sym, bal)
+                    await bot.send_message(config.TELEGRAM_CHAT_ID, result)
+                except Exception as e:
+                    await bot.send_message(
+                        config.TELEGRAM_CHAT_ID,
+                        f"[GRID ERROR] {sym}\n{html.escape(str(e))}",
+                    )
 
             await exchange.close()
 
         except Exception as e:
-            err = html.escape(str(e))
-            await bot.send_message(config.TELEGRAM_CHAT_ID, f"[GRID LOOP ERROR]\n{err}")
+            await bot.send_message(
+                config.TELEGRAM_CHAT_ID,
+                f"[GRID LOOP ERROR]\n{html.escape(str(e))}",
+            )
 
         await asyncio.sleep(config.GRID_LOOP_SECONDS)
 
 
-# ------------------------------------
-#   MAIN
-# ------------------------------------
-def main():
-    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CommandHandler("scan", scan))
-    app.add_handler(CommandHandler("markets", markets))  # NEW
-    app.run_polling()
+# ------------------------------------------------------
+# MAIN — starts bot safely
+# ------------------------------------------------------
+async def main():
+    global APP
+
+    APP = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
+
+    APP.add_handler(CommandHandler("start", start))
+    APP.add_handler(CommandHandler("stop", stop))
+    APP.add_handler(CommandHandler("scan", scan))
+    APP.add_handler(CommandHandler("markets", markets))
+
+    print(">>> BOT STARTED SUCCESSFULLY — POLLING…")
+
+    await APP.initialize()
+    await APP.start()
+    await APP.updater.start_polling()
+    await APP.updater.wait_for_stop()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
