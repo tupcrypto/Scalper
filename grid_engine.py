@@ -1,112 +1,91 @@
-# grid_engine.py
-
 import ccxt.async_support as ccxt
-from decimal import Decimal
 import config
-import asyncio
+import logging
 
-# -------------------------
-#  Load Correct Exchange
-# -------------------------
-async def get_exchange():
-    ex = ccxt.blofin({
-        "apiKey": config.EXCHANGE_API_KEY,
-        "secret": config.EXCHANGE_API_SECRET,
-        "password": config.EXCHANGE_API_PASSPHRASE,
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "swap",
-            "createMarketBuyOrderRequiresPrice": False
-        }
-    })
-    await ex.load_markets()
-    return ex
+logger = logging.getLogger(__name__)
+
+# Create exchange instance
+exchange = ccxt.blofin({
+    "apiKey": config.API_KEY,
+    "secret": config.API_SECRET,
+    "password": config.API_PASSWORD,
+    "enableRateLimit": True,
+})
 
 
-# -------------------------
-#  Fetch futures balance
-# -------------------------
-async def get_futures_balance(exchange):
+# ------------------------------------------------
+# Get balance
+# ------------------------------------------------
+async def get_balance():
     try:
-        bal = await exchange.fetch_balance()
-        if "USDT" in bal:
-            total = bal["USDT"]["total"]
-            if total:
-                return Decimal(str(total))
-        return Decimal("0")
+        balances = await exchange.fetch_balance()
+        total = balances.get("total", {})
+        return float(total.get("USDT", 0))
     except Exception as e:
-        return Decimal("0")
+        logger.error(f"BALANCE ERROR: {e}")
+        return 0
 
 
-# -------------------------
-#  Fetch price
-# -------------------------
-async def get_price(exchange, symbol):
+# ------------------------------------------------
+# Get price
+# ------------------------------------------------
+async def get_price(symbol):
     try:
-        t = await exchange.fetch_ticker(symbol)
-        return Decimal(str(t["last"]))
-    except:
+        ticker = await exchange.fetch_ticker(symbol)
+        return ticker["last"]
+    except Exception as e:
+        logger.error(f"PRICE ERROR {symbol}: {e}")
         return None
 
 
-# -------------------------
-#  Execute order
-# -------------------------
-async def execute_order(exchange, symbol, side, usdt_amount):
-    """
-    BloFin futures only need qty, NOT cost.
-    We convert USDT → contract size by price.
-    """
+# ------------------------------------------------
+# Place GRID trades
+# ------------------------------------------------
+async def run_grid(symbol, price):
+    balance = await get_balance()
 
-    price = await get_price(exchange, symbol)
-    if price is None:
-        return False, "Price unavailable"
-
-    qty = (Decimal(usdt_amount) / price).quantize(Decimal("0.0001"))
+    if balance < config.ORDER_SIZE_USDT:
+        logger.info(f"[GRID] {symbol} — NO ORDER, balance too low ({balance})")
+        return
 
     try:
-        order = await exchange.create_order(
+        # Example: simple neutral grid – BUY below price, SELL above price
+        buy_price = price * 0.997
+        sell_price = price * 1.003
+        amount = config.ORDER_SIZE_USDT / price
+
+        # BUY LIMIT
+        await exchange.create_order(
             symbol=symbol,
-            type="market",
-            side=side,
-            amount=float(qty),
+            type="limit",
+            side="buy",
+            price=round(buy_price, 2),
+            amount=round(amount, 3)
         )
-        return True, str(order)
+
+        # SELL LIMIT
+        await exchange.create_order(
+            symbol=symbol,
+            type="limit",
+            side="sell",
+            price=round(sell_price, 2),
+            amount=round(amount, 3)
+        )
+
+        logger.info(f"[GRID] {symbol} — Orders placed")
 
     except Exception as e:
-        return False, str(e)
+        logger.error(f"GRID ORDER ERROR {symbol}: {e}")
 
 
-# -------------------------
-#  Main grid logic per pair
-# -------------------------
-async def run_grid(exchange, symbol, balance):
-    price = await get_price(exchange, symbol)
-
-    if price is None:
-        return f"[GRID] {symbol} — price N/A"
-
-    # neutral mode = simple Pionex style
-    # grid band: +/- 0.5%
-    upper = price * Decimal("1.005")
-    lower = price * Decimal("0.995")
-
-    if balance < config.MIN_ORDER:
-        return f"[GRID] {symbol} — NO ORDER (Balance too small)"
-
-    mid = (upper + lower) / 2
-
-    if price < lower:
-        # LONG ENTRY
-        success, msg = await execute_order(exchange, symbol, "buy", config.MIN_ORDER)
-        return f"[GRID] {symbol} — LONG @ {price} → {msg}"
-
-    elif price > upper:
-        # SHORT ENTRY
-        success, msg = await execute_order(exchange, symbol, "sell", config.MIN_ORDER)
-        return f"[GRID] {symbol} — SHORT @ {price} → {msg}"
-
-    else:
-        return f"[GRID] {symbol} — HOLD @ {price}"
-
+# ------------------------------------------------
+# Get full market list
+# ------------------------------------------------
+async def get_markets():
+    try:
+        markets = await exchange.load_markets()
+        return list(markets.keys())
+    except Exception as e:
+        logger.error(f"MARKETS ERROR: {e}")
+        return []
 
