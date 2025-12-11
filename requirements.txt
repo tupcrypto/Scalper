@@ -1,6 +1,5 @@
 python-telegram-bot==20.7
 ccxt==4.2.93
-
-aiohttp==3.8.5
-aiodns==2.0.0
-pycares==4.2.0
+aiohttp==3.9.5
+aiodns==3.0.0
+pycares==4.3.0
