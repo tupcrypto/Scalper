@@ -1,50 +1,32 @@
+# config.py
 import os
+from decimal import Decimal
 
-# ============================
-# TELEGRAM BOT TOKEN
-# ============================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("❌ TELEGRAM_BOT_TOKEN missing! Add it in Render → Environment.")
+def env_required(key: str, default=None, required=False):
+    v = os.environ.get(key, default)
+    if required and (v is None or v == ""):
+        raise ValueError(f"❌ {key} missing for Blofin in Render Environment.")
+    return v
 
-# ============================
-# EXCHANGE SETTINGS
-# ============================
+# TELEGRAM
+TELEGRAM_BOT_TOKEN = env_required("TELEGRAM_BOT_TOKEN", required=True)
 
-EXCHANGE_ID = os.getenv("EXCHANGE_ID", "blofin")  # default blofin
+# BLOFIN credentials (password may be required by some exchanges)
+BLOFIN_API_KEY = env_required("BLOFIN_API_KEY", required=True)
+BLOFIN_API_SECRET = env_required("BLOFIN_API_SECRET", required=True)
+BLOFIN_PASSWORD = env_required("BLOFIN_PASSWORD", default="")  # optional; keep empty if not needed
 
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
-API_PASSWORD = os.getenv("API_PASSWORD")  # required for blofin
+# SYMBOLS list - exact symbols you confirmed
+SYMBOLS = [s.strip().upper() for s in env_required("SYMBOLS", default="BTCUSDT,SUIUSDT").split(",")]
 
-if not API_KEY or not API_SECRET:
-    raise ValueError("❌ API_KEY or API_SECRET missing in Render Environment.")
+# Risk & grid config
+GRID_LOOP_SECONDS = int(env_required("GRID_LOOP_SECONDS", default="8"))
+MIN_ORDER_USDT = Decimal(env_required("MIN_ORDER_USDT", default="5.5"))  # minimum order cost in USDT (exchange-dependent)
+TRADE_USDT_PER_SYMBOL = Decimal(env_required("TRADE_USDT_PER_SYMBOL", default="10"))  # how much USDT to allocate per entry
 
-if EXCHANGE_ID.lower() == "blofin" and not API_PASSWORD:
-    raise ValueError("❌ API_PASSWORD missing for Blofin in Render Environment.")
+# Execute orders? (use "true" or "1" to allow live orders)
+EXECUTE_ORDERS = env_required("EXECUTE_ORDERS", default="false").lower() in ("1", "true", "yes")
 
+# Logging / debug
+DEBUG = env_required("DEBUG", default="false").lower() in ("1", "true", "yes")
 
-# ============================
-# GRID SETTINGS
-# ============================
-
-GRID_PAIRS = os.getenv("GRID_PAIRS", "BTCUSDT,SUIUSDT").split(",")
-
-GRID_INTERVAL_SECONDS = int(os.getenv("GRID_INTERVAL_SECONDS", 5))  # grid loop delay
-
-MIN_ORDER_USDT = float(os.getenv("MIN_ORDER_USDT", 5))  # minimum allowed order
-
-
-# ============================
-# SCANNER SETTINGS
-# ============================
-
-SCAN_MIN_BALANCE = float(os.getenv("SCAN_MIN_BALANCE", 1))
-SCAN_MIN_VOLUME = float(os.getenv("SCAN_MIN_VOLUME", 10_000_000))  # default 10M volume
-
-
-# ============================
-# DEBUG
-# ============================
-
-DEBUG = os.getenv("DEBUG", "false").lower() == "true"
