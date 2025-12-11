@@ -1,249 +1,163 @@
-# grid_engine.py  (FULL replacement)
-import ccxt.async_support as ccxt
-import asyncio
+"""
+Grid engine and exchange helpers.
+Synchronous ccxt usage. Called via run_in_executor from bot (async context).
+"""
+
+import ccxt
 import math
-import config
 import time
+import logging
+from decimal import Decimal, InvalidOperation
 
-# Single shared exchange instance (created on first call)
-_EXCHANGE = None
+logger = logging.getLogger(__name__)
 
-def _normalize_pair_for_bitget(pair: str) -> str:
-    # ccxt/bitget futures often use "BTC/USDT:USDT" format for swap markets.
-    # We accept "BTC/USDT" in config and convert to "BTC/USDT:USDT"
-    if ":" in pair:
-        return pair
-    return f"{pair}:USDT"
 
-async def get_exchange():
+def get_exchange(api_key: str, api_secret: str):
     """
-    Returns a shared ccxt async exchange instance configured for Bitget USDT-M swap.
+    Return a ccxt exchange instance configured for Toobit.
+    If Toobit isn't available in your ccxt build, you can replace 'toobit' with the correct id.
     """
-    global _EXCHANGE
-    if _EXCHANGE is not None:
-        return _EXCHANGE
+    # Exchange id: 'toobit' — adjust if your ccxt doesn't have it (check ccxt.exchanges)
+    ex_id = "toobit"
+    if ex_id not in ccxt.exchanges:
+        # fall back to generic unified if necessary (user must confirm)
+        raise RuntimeError(f"ccxt does not list '{ex_id}' in this environment. Available: {', '.join(ccxt.exchanges)}")
 
-    exchange = ccxt.bitget({
-        "apiKey": config.BITGET_API_KEY,
-        "secret": config.BITGET_API_SECRET,
-        "password": config.BITGET_PASSPHRASE,
+    exchange_class = getattr(ccxt, ex_id)
+    ex = exchange_class({
+        "apiKey": api_key,
+        "secret": api_secret,
         "enableRateLimit": True,
-        "options": {
-            "defaultType": "swap",  # make sure we talk to USDT-perpetual endpoints
-            "createMarketBuyOrderRequiresPrice": False,
-        }
+        # Some exchanges require extra options; uncomment/adjust if needed:
+        # "options": { "createMarketBuyOrderRequiresPrice": False }
     })
+    # Set default timeouts
+    ex.timeout = 20000
+    return ex
 
-    # small safety config
-    exchange.headers = {"User-Agent": "XLR8-BOT/1.0"}
-    _EXCHANGE = exchange
-    return _EXCHANGE
 
-# -----------------------
-# BALANCE PARSER (robust)
-# -----------------------
-async def get_balance(exchange):
+def fetch_usdt_futures_balance(exchange):
     """
-    Try multiple paths inside Bitget fetch_balance() result to find USDT futures available balance.
-    Returns float (USDT).
+    Attempts to fetch the USDT futures available balance.
+    This is best-effort: many exchanges return different keys.
+    Returns float USDT available (not None).
     """
     try:
-        # force swap/futures type - many ccxt builds accept this param
-        balance = await exchange.fetch_balance({"type": "swap"})
-    except Exception:
-        # fallback without type
-        try:
-            balance = await exchange.fetch_balance()
-        except Exception as e:
-            # can't fetch balance
-            return 0.0
-
-    # Try multiple likely locations
-    try:
-        # 1) Common Bitget structure: balance['info']['USDT']['available']
-        usdt = None
-        info = balance.get("info", {})
-        if isinstance(info, dict):
-            usdt = info.get("USDT", {}).get("available") or info.get("usdt", {}).get("available") if isinstance(info.get("USDT", {}), dict) else None
-
-        # 2) ccxt often maps top-level 'USDT' key
-        if usdt is None:
-            top = balance.get("USDT")
-            if isinstance(top, dict):
-                usdt = top.get("free") or top.get("available") or top.get("total")
-
-        # 3) ccxt older: balance['total'].get('USDT')
-        if usdt is None:
-            total = balance.get("total", {})
-            if isinstance(total, dict):
-                usdt = total.get("USDT") or total.get("USDT")
-                # some ccxt returns numeric directly
-        # 4) fallback: try 'info' deeper keys
-        if usdt is None and isinstance(info, dict):
-            # sometimes info contains nested dicts under keys like 'data' or 'result'
-            for k in ("data", "result"):
-                if k in info and isinstance(info[k], dict):
-                    candidate = info[k].get("USDT") or info[k].get("usdt")
-                    if isinstance(candidate, dict):
-                        usdt = candidate.get("available") or candidate.get("free") or candidate.get("total")
-                        if usdt:
-                            break
-
-        # final fallback checks
-        if usdt is None:
-            # try safe keys
-            usdt = 0.0
-            possible = balance.get("free") or balance.get("free", {})
-            if isinstance(possible, dict):
-                usdt = possible.get("USDT", 0.0)
-
-        # convert safely
-        return float(usdt or 0.0)
-    except Exception:
-        return 0.0
-
-# -----------------------
-# FETCH PRICE
-# -----------------------
-async def get_price(exchange, pair):
-    bitget_symbol = _normalize_pair_for_bitget(pair)
-    ticker = await exchange.fetch_ticker(bitget_symbol)
-    return float(ticker.get("last", 0.0) or 0.0)
-
-# -----------------------
-# SIMPLE DECISION (safe)
-# -----------------------
-async def decide_action(exchange, pair):
-    """
-    Lightweight decision engine:
-    - fetch 3 x 1m candles and decide momentum.
-    - If latest close is lower than average (downward momentum) -> LONG (buy dip)
-    - If latest close is higher than average (up momentum) -> SHORT (sell rise)
-    This is a simple heuristic for demonstration; you can replace it later with better logic.
-    """
-    bitget_symbol = _normalize_pair_for_bitget(pair)
-    try:
-        ohlcv = await exchange.fetch_ohlcv(bitget_symbol, timeframe="1m", limit=5)
-        if not ohlcv or len(ohlcv) < 3:
-            return "HOLD"
-        closes = [c[4] for c in ohlcv if len(c) >= 5]
-        avg = sum(closes[:-1]) / max(1, len(closes[:-1]))
-        last = closes[-1]
-        # momentum percentage
-        diff = (last - avg) / avg if avg != 0 else 0
-        # thresholds
-        if diff < -0.0015:       # small dip -> consider LONG (buy the dip)
-            return "LONG"
-        elif diff > 0.0015:      # small rise -> consider SHORT (sell into strength)
-            return "SHORT"
-        else:
-            return "HOLD"
-    except Exception:
-        return "HOLD"
-
-# -----------------------
-# ORDER EXECUTOR (safe)
-# -----------------------
-async def execute_order(exchange, pair, side, usdt_cost):
-    """
-    Execute an order.
-    By default, this function simulates unless config.LIVE_TRADING == True.
-    For Bitget: we will attempt to use market order with amount=cost (ccxt option set).
-    """
-    bitget_symbol = _normalize_pair_for_bitget(pair)
-    min_order = config.get_min_order_for_pair(pair)
-    if usdt_cost < min_order:
-        return {"ok": False, "error": f"order cost {usdt_cost:.2f} < min {min_order:.2f}"}
-
-    if not config.LIVE_TRADING:
-        return {"ok": True, "sim": True, "side": side, "cost": usdt_cost}
-
-    try:
-        # Many CCXT bitget implementations expect amount as base size for market orders.
-        # Because Bitget/ccxt mapping varies, we attempt to create market order with 'amount' as cost.
-        # If that fails, we will calculate quantity = cost / price and try again.
-        try:
-            # first attempt: pass cost as amount
-            order = await exchange.create_order(
-                symbol=bitget_symbol,
-                type="market",
-                side=side.lower(),
-                amount=float(usdt_cost),
-                params={}
-            )
-            return {"ok": True, "order": order}
-        except Exception as e1:
-            # fallback: compute qty = cost / price then place market order with qty
-            ticker = await exchange.fetch_ticker(bitget_symbol)
-            price = float(ticker.get("last", 0.0) or 0.0)
-            if price <= 0:
-                return {"ok": False, "error": "invalid price for qty calc"}
-            qty = usdt_cost / price
-            order = await exchange.create_order(
-                symbol=bitget_symbol,
-                type="market",
-                side=side.lower(),
-                amount=float(qty),
-                params={}
-            )
-            return {"ok": True, "order": order}
+        bal = exchange.fetch_balance()
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        logger.exception("fetch_balance failed")
+        raise
 
-# -----------------------
-# PROCESS ONE SYMBOL (main entry used by bot)
-# -----------------------
-async def process_symbol(exchange, pair, balance):
-    """
-    - pair: "BTC/USDT"
-    - balance: float USDT available in futures wallet
-    """
+    # Many exchanges return 'total'/'free' under nested keys. Try common patterns.
+    # 1) futures account breakdown
+    for maybe in ("USDT", "USDT:USDT", "USDT-FUTURES"):
+        try:
+            # check nested dict structures
+            if maybe in bal:
+                if isinstance(bal[maybe], dict):
+                    free = bal[maybe].get("free") or bal[maybe].get("available") or bal[maybe].get("total")
+                    if free is not None:
+                        return float(free)
+                else:
+                    # sometimes direct numeric
+                    return float(bal[maybe])
+        except Exception:
+            continue
+
+    # 2) unified structure: bal['total']['USDT']
     try:
-        price = await get_price(exchange, pair)
-    except Exception as e:
-        return {"action": "ERROR", "price": 0, "result": f"price error: {e}"}
-
-    min_order = config.get_min_order_for_pair(pair)
-    if balance < min_order:
-        return {"action": "NO_ORDER", "price": price, "result": f"Balance {balance:.2f} too small"}
-
-    # determine action
-    action = await decide_action(exchange, pair)
-
-    if action == "HOLD":
-        return {"action": "HOLD", "price": price, "result": "Neutral zone"}
-
-    # compute allocation: split allowed capital across pairs and grid levels
-    try:
-        pairs_count = max(1, len(config.PAIRS))
-        alloc_total = (balance * (config.MAX_CAPITAL_PCT / 100.0))
-        # default allocate equal to each pair, and then divide across grid levels to be conservative
-        usdt_alloc = alloc_total / pairs_count / max(1, config.GRID_LEVELS)
-        # ensure at least min_order
-        usdt_alloc = max(usdt_alloc, min_order)
-    except Exception:
-        usdt_alloc = max(min_order, balance * 0.01)
-
-    # execute or simulate
-    res = await execute_order(await get_exchange(), pair, "buy" if action == "LONG" else "sell", usdt_alloc)
-
-    if res.get("ok"):
-        if res.get("sim"):
-            return {"action": action, "price": price, "result": f"(SIM) {action} simulated with {usdt_alloc:.2f} USDT"}
-        else:
-            return {"action": action, "price": price, "result": f"ORDER PLACED: {usdt_alloc:.2f} USDT"}
-    else:
-        return {"action": "ERROR", "price": price, "result": f"ORDER_FAIL: {res.get('error')}"}
-
-# -----------------------
-# CLEANUP (close exchange) - call when shutting down if possible
-# -----------------------
-async def close_exchange():
-    global _EXCHANGE
-    try:
-        if _EXCHANGE:
-            await _EXCHANGE.close()
+        total = bal.get("total", {})
+        if isinstance(total, dict) and "USDT" in total:
+            return float(total["USDT"])
     except Exception:
         pass
-    _EXCHANGE = None
+
+    # 3) fallback: 'free' top-level
+    try:
+        free = bal.get("free", {})
+        if isinstance(free, dict) and "USDT" in free:
+            return float(free["USDT"])
+    except Exception:
+        pass
+
+    # 4) try to find any numeric USDT-like key
+    for k, v in bal.items():
+        if isinstance(k, str) and "USDT" in k.upper():
+            try:
+                return float(v.get("free") or v.get("available") or v.get("total") or v)
+            except Exception:
+                continue
+
+    # last fallback: sum of free values if any numeric
+    try:
+        if isinstance(bal, dict):
+            for part in ("info", "total", "free", "used"):
+                if part in bal and isinstance(bal[part], dict) and "USDT" in bal[part]:
+                    return float(bal[part]["USDT"])
+    except Exception:
+        pass
+
+    # can't locate: return 0.0 as safe default (caller should treat 0 as insufficient)
+    return 0.0
+
+
+def symbol_to_ccxt(symbol: str):
+    """ normalize symbol like BTC/USDT """
+    return symbol.replace("/", "/")
+
+
+def compute_order_amount(exchange, symbol: str, usdt_budget: float, leverage: int):
+    """
+    Compute base currency amount to spend for market order given USDT budget and symbol price.
+    Returns amount in base currency (float).
+    """
+    ticker = exchange.fetch_ticker(symbol)
+    price = float(ticker["last"] or ticker["close"] or ticker["bid"] or ticker["ask"])
+    if price <= 0:
+        raise RuntimeError("Invalid price fetched")
+    # For futures, approximate notional = amount * price / leverage? If using cross margin with leverage,
+    # many exchanges expect margin amount; but we'll compute base amount for a position size = (usdt_budget * leverage) / price
+    position_size = (usdt_budget * leverage) / price
+    # round down to exchange precision
+    market = exchange.market(symbol)
+    precision = market.get("precision", {}).get("amount", 8)
+    # floor to precision
+    factor = 10 ** precision
+    amount = math.floor(position_size * factor) / factor
+    return amount
+
+
+def place_market_order(exchange, symbol: str, side: str, amount: float):
+    """
+    Place a market order. This function tries to handle exchanges that require different params.
+    Returns order dict on success or raises.
+    """
+    try:
+        # Use unified create_order interface
+        # Some exchanges require specifying 'params' like {"reduceOnly": False, "positionSide": "BOTH"}
+        order = exchange.create_order(symbol, "market", side.lower(), amount)
+        return order
+    except Exception as e:
+        # Try fallback for exchanges that require market buy amount as cost
+        # We'll attempt to calculate cost and pass as amount param for buy on such exchanges
+        try:
+            # fetch price
+            ticker = exchange.fetch_ticker(symbol)
+            price = float(ticker.get("last") or ticker.get("close") or ticker.get("ask") or ticker.get("bid"))
+            if side.lower() == "buy":
+                # amount might be interpreted as cost on some exchanges — attempt to pass cost instead
+                cost = amount * price
+                # Some exchanges accept create_market_buy_order_requires_price option — try using create_order with cost
+                order = exchange.create_order(symbol, "market", side.lower(), None, cost)
+                return order
+        except Exception:
+            pass
+        raise
+
+
+def safe_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return 0.0
 
