@@ -2,6 +2,4 @@ services:
   - type: worker
     name: scalper
     env: python
-    pythonVersion: 3.10.13
-    buildCommand: pip install -r requirements.txt
-    startCommand: python3 bot.py
+    startCommand: "python3 bot.py"
