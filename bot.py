@@ -1,119 +1,54 @@
 # bot.py
-import logging
-import os
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
 
-import config
-from grid_engine import GridManager
-from blofin_api import BlofinAsync
 import asyncio
+import logging
+from telegram.ext import Application, CommandHandler
+import config
+from blofin_api import get_exchange
+from grid_engine import GridManager
+from scanner import scan_symbols
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("scalper")
+logging.basicConfig(level=logging.INFO)
 
-GRID = None
-EXCHANGE = None
-TASKS = {}
+GRID_TASKS = []
 
+async def start(update, context):
+    await update.message.reply_text("BOT STARTED — GRID RUNNING\nPairs: " + ", ".join(config.SYMBOLS))
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global GRID, EXCHANGE, TASKS
-    chat = update.effective_chat
+    exchange = await get_exchange()
+    grid = GridManager(exchange, config.SYMBOLS, context.bot)
 
-    await update.message.reply_text("BOT STARTED — GRID RUNNING")
-
-    if EXCHANGE is None:
-        EXCHANGE = BlofinAsync(
-            config.BLOFIN_API_KEY,
-            config.BLOFIN_API_SECRET,
-            config.BLOFIN_PASSWORD,
-        )
-
-    if GRID is None:
-        GRID = GridManager(EXCHANGE, config.SYMBOLS, context.bot)
-
-    # start loops
     for sym in config.SYMBOLS:
-        if sym not in TASKS:
-            TASKS[sym] = asyncio.create_task(GRID.run_grid_loop(sym))
+        task = asyncio.create_task(grid.run_grid_loop(sym))
+        GRID_TASKS.append(task)
 
-    await update.message.reply_text(f"Pairs: {', '.join(config.SYMBOLS)}")
+async def scan(update, context):
+    exchange = await get_exchange()
+    grid = GridManager(exchange, config.SYMBOLS, context.bot)
+    result = await scan_symbols(grid)
+    await update.message.reply_text(result)
 
+async def markets(update, context):
+    exchange = await get_exchange()
+    await exchange.load_markets()
 
-async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global TASKS, EXCHANGE, GRID
+    lines = []
+    for sym in config.SYMBOLS:
+        if sym in exchange.markets:
+            lines.append(f"{sym}: FOUND")
+        else:
+            lines.append(f"{sym}: NOT FOUND")
 
-    await update.message.reply_text("Stopping grid tasks...")
-
-    for sym, task in list(TASKS.items()):
-        task.cancel()
-        TASKS.pop(sym, None)
-
-    if EXCHANGE:
-        await EXCHANGE.close()
-        EXCHANGE = None
-
-    GRID = None
-    await update.message.reply_text("All grid tasks stopped.")
-
-
-async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global GRID, EXCHANGE
-
-    await update.message.reply_text("Running scan...")
-
-    if EXCHANGE is None:
-        EXCHANGE = BlofinAsync(
-            config.BLOFIN_API_KEY,
-            config.BLOFIN_API_SECRET,
-            config.BLOFIN_PASSWORD,
-        )
-
-    if GRID is None:
-        GRID = GridManager(EXCHANGE, config.SYMBOLS, context.bot)
-
-    r = await GRID.scan_all()
-    msg = f"SCAN DEBUG — BALANCE: {r['balance']:.2f} USDT\n\n" + "\n".join(r["lines"])
-    await update.message.reply_text(msg)
-
-
-async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global EXCHANGE
-
-    if EXCHANGE is None:
-        EXCHANGE = BlofinAsync(
-            config.BLOFIN_API_KEY,
-            config.BLOFIN_API_SECRET,
-            config.BLOFIN_PASSWORD,
-        )
-
-    try:
-        data = await EXCHANGE.fetch_markets_info(config.SYMBOLS)
-        text = "\n".join(data)
-        await update.message.reply_text(text)
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
-
+    await update.message.reply_text("\n".join(lines))
 
 def main():
-    """IMPORTANT: non-async main due to Render background worker limitations"""
-    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("stop", stop_command))
-    app.add_handler(CommandHandler("scan", scan_command))
-    app.add_handler(CommandHandler("markets", markets_command))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("markets", markets))
 
-    logger.info("Bot polling started (Render-safe)...")
-
-    # IMPORTANT FIX: no event loop closing issues
-    app.run_polling(close_loop=False)
-
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
