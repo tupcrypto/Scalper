@@ -1,19 +1,15 @@
-# config.py
 import os
 
-# Telegram bot token
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Blofin credentials
-BLOFIN_API_KEY = os.getenv("BLOFIN_API_KEY")
-BLOFIN_API_SECRET = os.getenv("BLOFIN_API_SECRET")
-BLOFIN_PASSWORD = os.getenv("BLOFIN_PASSWORD")
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
+API_PASSWORD = os.getenv("API_PASSWORD")
 
-# Trading pairs (Blofin futures format)
-SYMBOLS = ["BTC-USDT-SWAP", "SUI-USDT-SWAP"]
+# Temporary placeholder — will correct after /list works
+SYMBOLS = [
+    "BTC-USDT",
+    "SUI-USDT"
+]
 
-# Grid configuration
-MIN_ORDER_USDT = 5.5
-GRID_INTERVAL = 0.25
-GRID_LOOP_SECONDS = 4
-
+GRID_INTERVAL = 10  # seconds between grid checks
