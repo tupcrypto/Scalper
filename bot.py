@@ -1,8 +1,7 @@
-# bot.py
-
 import asyncio
 import logging
 from telegram.ext import Application, CommandHandler
+
 import config
 from blofin_api import get_exchange
 from grid_engine import GridManager
@@ -10,55 +9,59 @@ from scanner import scan_symbols
 
 logging.basicConfig(level=logging.INFO)
 
-GRID_TASKS = []
+GRID_TASKS_STARTED = False
+GRID_MANAGER = None
 
 async def start(update, context):
-    await update.message.reply_text("BOT STARTED — GRID RUNNING\nPairs: " + ", ".join(config.SYMBOLS))
+    global GRID_TASKS_STARTED, GRID_MANAGER
+
+    await update.message.reply_text(
+        "BOT STARTED — GRID RUNNING\nPairs: " + ", ".join(config.SYMBOLS)
+    )
+
+    if GRID_TASKS_STARTED:
+        return
 
     exchange = await get_exchange()
-    grid = GridManager(exchange, config.SYMBOLS, context.bot)
+    GRID_MANAGER = GridManager(exchange, config.SYMBOLS, context.bot)
 
+    # start grid loops NON-BLOCKING
     for sym in config.SYMBOLS:
-        task = asyncio.create_task(grid.run_grid_loop(sym))
-        GRID_TASKS.append(task)
+        asyncio.create_task(GRID_MANAGER.run_grid_loop(sym))
+
+    GRID_TASKS_STARTED = True
+
 
 async def scan(update, context):
-    exchange = await get_exchange()
-    grid = GridManager(exchange, config.SYMBOLS, context.bot)
-    result = await scan_symbols(grid)
+    result = await scan_symbols(GRID_MANAGER)
     await update.message.reply_text(result)
+
 
 async def markets(update, context):
     exchange = await get_exchange()
     await exchange.load_markets()
 
-    lines = []
+    txt = ""
     for sym in config.SYMBOLS:
-        if sym in exchange.markets:
-            lines.append(f"{sym}: FOUND")
-        else:
-            lines.append(f"{sym}: NOT FOUND")
+        txt += f"{sym}: {'FOUND' if sym in exchange.markets else 'NOT FOUND'}\n"
 
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text(txt)
+
 
 async def list_markets(update, context):
-    """Dump Blofin swap market list"""
     exchange = await get_exchange()
-    markets = await exchange.load_markets()
+    markets = exchange.markets
 
-    lines = []
+    txt = "Blofin Futures Markets:\n"
     for m in markets:
         try:
-            if markets[m]["type"] == "swap":   # futures only
-                lines.append(m)
+            if markets[m]["type"] == "swap":
+                txt += m + "\n"
         except:
             pass
 
-    if not lines:
-        lines.append("NO SWAP MARKETS FOUND (this means wrong credential or Blofin changed API)")
+    await update.message.reply_text(txt[:4000])
 
-    msg = "Available Blofin Futures Markets:\n" + "\n".join(lines)
-    await update.message.reply_text(msg)
 
 def main():
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
@@ -70,6 +73,6 @@ def main():
 
     app.run_polling()
 
+
 if __name__ == "__main__":
     main()
-
