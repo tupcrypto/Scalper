@@ -41,12 +41,32 @@ async def markets(update, context):
 
     await update.message.reply_text("\n".join(lines))
 
+async def list_markets(update, context):
+    """Dump Blofin swap market list"""
+    exchange = await get_exchange()
+    markets = await exchange.load_markets()
+
+    lines = []
+    for m in markets:
+        try:
+            if markets[m]["type"] == "swap":   # futures only
+                lines.append(m)
+        except:
+            pass
+
+    if not lines:
+        lines.append("NO SWAP MARKETS FOUND (this means wrong credential or Blofin changed API)")
+
+    msg = "Available Blofin Futures Markets:\n" + "\n".join(lines)
+    await update.message.reply_text(msg)
+
 def main():
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("markets", markets))
+    app.add_handler(CommandHandler("list", list_markets))
 
     app.run_polling()
 
