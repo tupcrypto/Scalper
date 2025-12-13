@@ -1,39 +1,15 @@
 import os
 
-# ===== Telegram =====
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
 
-# ===== Exchange =====
-EXCHANGE_ID = "bitunix"
+EXCHANGE_ID = "bybit"
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
 
-API_KEY = os.getenv("BITUNIX_API_KEY")
-API_SECRET = os.getenv("BITUNIX_API_SECRET")
-
-# ===== Trading =====
-PAIRS = [p.strip() for p in os.getenv(
-    "PAIRS", "BTC/USDT:USDT,SUI/USDT:USDT"
-).split(",")]
+SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "").split(",")]
 
 LEVERAGE = int(os.getenv("LEVERAGE", "3"))
-GRID_LEVELS = int(os.getenv("GRID_LEVELS", "20"))
-GRID_RANGE_PERCENT = float(os.getenv("GRID_RANGE_PERCENT", "5"))
-USDT_PER_GRID = float(os.getenv("USDT_PER_GRID", "5"))
+GRID_GAP_PCT = float(os.getenv("GRID_GAP_PCT", "0.003"))
+ORDER_USDT = float(os.getenv("ORDER_USDT", "6"))
+GRID_LOOP_SECONDS = int(os.getenv("GRID_LOOP_SECONDS", "15"))
 
-GRID_LOOP_SECONDS = int(os.getenv("GRID_LOOP_SECONDS", "10"))
-EXECUTE_ORDERS = os.getenv("EXECUTE_ORDERS", "true").lower() == "true"
-
-DEBUG = os.getenv("DEBUG", "true").lower() == "true"
-
-# ===== Validation =====
-missing = []
-for k, v in {
-    "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
-    "API_KEY": API_KEY,
-    "API_SECRET": API_SECRET,
-}.items():
-    if not v:
-        missing.append(k)
-
-if missing:
-    raise RuntimeError(f"Missing env vars: {', '.join(missing)}")
