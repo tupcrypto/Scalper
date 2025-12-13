@@ -1,66 +1,56 @@
-# grid_engine.py
-import asyncio
-from decimal import Decimal, InvalidOperation
+import math
+import time
+import config
 
-class GridManager:
-    def __init__(self, exchange, symbols):
-        self.exchange = exchange
-        self.symbols = symbols
-        self.tasks = {}
+class NeutralGrid:
+    def __init__(self, exchange):
+        self.ex = exchange
+        self.running = False
 
-    async def get_price(self, symbol):
+    def get_price(self, symbol):
+        ticker = self.ex.fetch_ticker(symbol)
+        return ticker["last"]
+
+    def set_leverage(self, symbol):
         try:
-            ticker = await self.exchange.fetch_ticker(symbol)
-            return ticker.get("last") or ticker.get("close") or None
-        except Exception as e:
-            return None
-
-    async def get_balance_usdt(self):
-        try:
-            bal = await self.exchange.fetch_balance()
-            # try common keys
-            for key in ("USDT", "usdt"):
-                if key in bal and isinstance(bal[key], dict):
-                    return float(bal[key].get("free", 0) or 0)
-            # fallback: try total['free'] for any USDT field
-            for k, v in bal.items():
-                if k and "USDT" in str(k).upper() and isinstance(v, dict):
-                    return float(v.get("free", 0) or 0)
-            # fallback total
-            return float(bal.get("total", {}).get("USDT", 0) or 0)
-        except Exception:
-            return 0.0
-
-    async def start_grid_for(self, symbol, loop_seconds=10, notify=None):
-        """
-        start a non-blocking background loop for a symbol.
-        notify(bot, text) is optional callback to send messages
-        """
-        if symbol in self.tasks:
-            return False  # already running
-
-        async def _loop():
-            while True:
-                price = await self.get_price(symbol)
-                bal = await self.get_balance_usdt()
-                msg = f"[GRID] {symbol} price={price} balance={bal}"
-                print(msg)
-                if notify:
-                    try:
-                        await notify(msg)
-                    except Exception:
-                        pass
-                await asyncio.sleep(loop_seconds)
-
-        task = asyncio.create_task(_loop())
-        self.tasks[symbol] = task
-        return True
-
-    async def stop_all(self):
-        for t in list(self.tasks.values()):
-            t.cancel()
-        self.tasks = {}
-        try:
-            await self.exchange.close()
+            self.ex.set_leverage(config.LEVERAGE, symbol)
         except Exception:
             pass
+
+    def build_grid(self, price):
+        half_range = price * config.GRID_RANGE_PERCENT / 100
+        low = price - half_range
+        high = price + half_range
+        step = (high - low) / config.GRID_LEVELS
+        return [low + i * step for i in range(config.GRID_LEVELS + 1)]
+
+    def place_order(self, symbol, side, price):
+        if not config.EXECUTE_ORDERS:
+            return
+
+        amount = round(config.USDT_PER_GRID / price, 6)
+        self.ex.create_limit_order(symbol, side, amount, price)
+
+    def run(self):
+        self.running = True
+        while self.running:
+            for symbol in config.PAIRS:
+                try:
+                    self.set_leverage(symbol)
+                    price = self.get_price(symbol)
+                    grid = self.build_grid(price)
+
+                    for g in grid:
+                        if g < price:
+                            self.place_order(symbol, "buy", g)
+                        elif g > price:
+                            self.place_order(symbol, "sell", g)
+
+                except Exception as e:
+                    print(f"[GRID ERROR] {symbol}: {e}")
+
+            time.sleep(config.GRID_LOOP_SECONDS)
+
+    def stop(self):
+        self.running = False
+
