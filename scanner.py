@@ -1,15 +1,11 @@
-async def scan_symbols(grid):
-    balance = await grid.exchange.fetch_balance()
-    bal = balance.get("USDT", {}).get("free", 0)
-
-    result = f"SCAN DEBUG — BALANCE: {bal:.2f} USDT\n\n"
-
-    for sym in grid.symbols:
-        price = await grid.get_price(sym)
-
+# scanner.py
+async def run_scan(grid: "GridManager"):
+    bal = await grid.get_balance_usdt()
+    out = f"SCAN DEBUG — BALANCE: {bal:.2f} USDT\n\n"
+    for s in grid.symbols:
+        price = await grid.get_price(s)
         if price is None:
-            result += f"{sym}: ERROR price unavailable\n"
+            out += f"{s}: ERROR price unavailable\n"
         else:
-            result += f"{sym}: price = {price}\n"
-
-    return result
+            out += f"{s}: price={price}\n"
+    return out
