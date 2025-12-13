@@ -1,100 +1,53 @@
-# bot.py
 import asyncio
-import logging
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
+from telegram.ext import Application, CommandHandler, ContextTypes
 import config
-from exchanges import create_exchange
-from grid_engine import GridManager
-from scanner import run_scan
+from exchange import get_exchange
+from grid_engine import NeutralGrid
+import threading
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("scalper")
-
-EXCHANGE = None
-GRID = None
-
-async def ensure_exchange():
-    global EXCHANGE, GRID
-    if EXCHANGE is None:
-        exchange, err = await create_exchange()
-        if err:
-            return None, err
-        EXCHANGE = exchange
-        GRID = GridManager(EXCHANGE, config.SYMBOLS)
-    return EXCHANGE, None
+exchange = get_exchange()
+grid = NeutralGrid(exchange)
+grid_thread = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    exchange, err = await ensure_exchange()
-    if err:
-        await update.message.reply_text("❌ " + err)
+    global grid_thread
+    if grid_thread and grid_thread.is_alive():
+        await update.message.reply_text("Grid already running")
         return
 
-    await update.message.reply_text("BOT STARTED — GRID RUNNING\nPairs: " + ", ".join(config.SYMBOLS))
+    grid_thread = threading.Thread(target=grid.run, daemon=True)
+    grid_thread.start()
 
-    # start grid loops for each symbol (non-blocking)
-    for sym in config.SYMBOLS:
-        started = await GRID.start_grid_for(sym, loop_seconds=config.GRID_LOOP_SECONDS, notify=lambda msg: context.bot.send_message(chat_id=update.effective_chat.id, text=msg) if False else None)
-        logger.info("start grid for %s -> %s", sym, started)
+    await update.message.reply_text(
+        "✅ GRID STARTED\nPairs:\n" + "\n".join(config.PAIRS)
+    )
 
-async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if GRID is None:
-        ex, err = await ensure_exchange()
-        if err:
-            await update.message.reply_text("❌ " + err)
-            return
-    out = await run_scan(GRID)
-    await update.message.reply_text(out)
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    grid.stop()
+    await update.message.reply_text("⛔ GRID STOPPED")
 
-async def list_markets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    exchange, err = await ensure_exchange()
-    if err:
-        await update.message.reply_text("❌ " + err)
-        return
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bal = exchange.fetch_balance()
+    usdt = bal["USDT"]["free"]
+    await update.message.reply_text(f"💰 Balance: {usdt:.2f} USDT")
 
-    # build a list of markets (limit to 2000 chars)
-    try:
-        markets = sorted(exchange.markets.keys())
-        chunks = []
-        cur = ""
-        for m in markets:
-            line = m + "\n"
-            if len(cur) + len(line) > 1900:
-                chunks.append(cur)
-                cur = ""
-            cur += line
-        if cur:
-            chunks.append(cur)
-        for chunk in chunks:
-            await update.message.reply_text(chunk)
-    except Exception as e:
-        await update.message.reply_text("Error fetching markets: " + repr(e))
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = []
+    for s in config.PAIRS:
+        p = exchange.fetch_ticker(s)["last"]
+        msg.append(f"{s}: {p}")
+    await update.message.reply_text("\n".join(msg))
 
-async def markets_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    exchange, err = await ensure_exchange()
-    if err:
-        await update.message.reply_text("❌ " + err)
-        return
-    txt = ""
-    for s in config.SYMBOLS:
-        txt += f"{s}: {'FOUND' if s in exchange.markets else 'NOT FOUND'}\n"
-    await update.message.reply_text(txt)
-
-def main():
-    if not config.TELEGRAM_BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN missing in env")
-        return
-
-    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
+async def main():
+    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("scan", scan))
-    app.add_handler(CommandHandler("list", list_markets))
-    app.add_handler(CommandHandler("markets", markets_check))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("price", price))
 
-    # run polling (single instance only)
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
