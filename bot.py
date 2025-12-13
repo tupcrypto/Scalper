@@ -1,12 +1,8 @@
-import asyncio
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
-from config import *
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import asyncio
 import grid_engine
+from config import *
 
 RUNNING = False
 
@@ -29,7 +25,7 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             p = await grid_engine.get_price(s)
             msg += f"{s}: {p}\n"
-        except:
+        except Exception as e:
             msg += f"{s}: ERROR\n"
     await update.message.reply_text(msg)
 
@@ -41,21 +37,20 @@ async def grid_loop(app):
                 try:
                     await grid_engine.grid_step(s)
                 except Exception as e:
-                    await app.bot.send_message(
-                        chat_id=app.bot.id,
-                        text=f"⚠️ {s} ERROR: {e}"
-                    )
+                    print(f"{s} GRID ERROR:", e)
         await asyncio.sleep(GRID_LOOP_SECONDS)
 
-async def main():
+def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("scan", scan))
 
-    asyncio.create_task(grid_loop(app))
-    await app.run_polling()
+    app.post_init = lambda _: asyncio.create_task(grid_loop(app))
+
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
+
