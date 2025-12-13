@@ -1,39 +1,39 @@
-# config.py
 import os
 
-# ---------------------------------------------------------
-# 🔹 TELEGRAM
-# ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+# ===== Telegram =====
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
 
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("❌ TELEGRAM_BOT_TOKEN missing in Render environment.")
+# ===== Exchange =====
+EXCHANGE_ID = "bitunix"
 
-# ---------------------------------------------------------
-# 🔹 EXCHANGE (BLOFIN)
-# ---------------------------------------------------------
-EXCHANGE_ID = os.getenv("EXCHANGE_ID", "blofin").strip()
+API_KEY = os.getenv("BITUNIX_API_KEY")
+API_SECRET = os.getenv("BITUNIX_API_SECRET")
 
-API_KEY      = os.getenv("BLOFIN_API_KEY", "").strip()
-API_SECRET   = os.getenv("BLOFIN_API_SECRET", "").strip()
-API_PASSWORD = os.getenv("BLOFIN_PASSWORD", "").strip()  # passphrase
+# ===== Trading =====
+PAIRS = [p.strip() for p in os.getenv(
+    "PAIRS", "BTC/USDT:USDT,SUI/USDT:USDT"
+).split(",")]
 
-if not API_KEY or not API_SECRET or not API_PASSWORD:
-    raise ValueError("❌ Missing one of BLOFIN_API_KEY / BLOFIN_API_SECRET / BLOFIN_PASSWORD in environment!")
+LEVERAGE = int(os.getenv("LEVERAGE", "3"))
+GRID_LEVELS = int(os.getenv("GRID_LEVELS", "20"))
+GRID_RANGE_PERCENT = float(os.getenv("GRID_RANGE_PERCENT", "5"))
+USDT_PER_GRID = float(os.getenv("USDT_PER_GRID", "5"))
 
-# ---------------------------------------------------------
-# 🔹 SYMBOLS (your preferred pairs)
-# ---------------------------------------------------------
-PAIRS = os.getenv("PAIRS", "BTCUSDT,SUIUSDT")
-SYMBOLS = [s.strip() for s in PAIRS.split(",") if s.strip()]
-
-# ---------------------------------------------------------
-# 🔹 GRID + ORDER SETTINGS
-# ---------------------------------------------------------
-GRID_INTERVAL = int(os.getenv("GRID_INTERVAL", "15"))   # seconds
+GRID_LOOP_SECONDS = int(os.getenv("GRID_LOOP_SECONDS", "10"))
 EXECUTE_ORDERS = os.getenv("EXECUTE_ORDERS", "true").lower() == "true"
-TRADE_USDT_PER_SYMBOL = float(os.getenv("TRADE_USDT_PER_SYMBOL", "10"))
 
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 
+# ===== Validation =====
+missing = []
+for k, v in {
+    "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
+    "API_KEY": API_KEY,
+    "API_SECRET": API_SECRET,
+}.items():
+    if not v:
+        missing.append(k)
+
+if missing:
+    raise RuntimeError(f"Missing env vars: {', '.join(missing)}")
