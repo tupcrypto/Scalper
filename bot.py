@@ -1,52 +1,60 @@
 import asyncio
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-import config
-from exchange import get_exchange
-from grid_engine import NeutralGrid
-import threading
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
+from config import *
+import grid_engine
 
-exchange = get_exchange()
-grid = NeutralGrid(exchange)
-grid_thread = None
+RUNNING = False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global grid_thread
-    if grid_thread and grid_thread.is_alive():
-        await update.message.reply_text("Grid already running")
-        return
-
-    grid_thread = threading.Thread(target=grid.run, daemon=True)
-    grid_thread.start()
-
+    global RUNNING
+    RUNNING = True
     await update.message.reply_text(
-        "✅ GRID STARTED\nPairs:\n" + "\n".join(config.PAIRS)
+        f"✅ GRID STARTED (Bybit Futures)\nPairs: {', '.join(SYMBOLS)}"
     )
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    grid.stop()
-    await update.message.reply_text("⛔ GRID STOPPED")
+    global RUNNING
+    RUNNING = False
+    await update.message.reply_text("🛑 GRID STOPPED")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    bal = exchange.fetch_balance()
-    usdt = bal["USDT"]["free"]
-    await update.message.reply_text(f"💰 Balance: {usdt:.2f} USDT")
+async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bal = await grid_engine.get_balance()
+    msg = f"Balance: {bal:.2f} USDT\n\n"
+    for s in SYMBOLS:
+        try:
+            p = await grid_engine.get_price(s)
+            msg += f"{s}: {p}\n"
+        except:
+            msg += f"{s}: ERROR\n"
+    await update.message.reply_text(msg)
 
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = []
-    for s in config.PAIRS:
-        p = exchange.fetch_ticker(s)["last"]
-        msg.append(f"{s}: {p}")
-    await update.message.reply_text("\n".join(msg))
+async def grid_loop(app):
+    global RUNNING
+    while True:
+        if RUNNING:
+            for s in SYMBOLS:
+                try:
+                    await grid_engine.grid_step(s)
+                except Exception as e:
+                    await app.bot.send_message(
+                        chat_id=app.bot.id,
+                        text=f"⚠️ {s} ERROR: {e}"
+                    )
+        await asyncio.sleep(GRID_LOOP_SECONDS)
 
 async def main():
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("scan", scan))
 
+    asyncio.create_task(grid_loop(app))
     await app.run_polling()
 
 if __name__ == "__main__":
