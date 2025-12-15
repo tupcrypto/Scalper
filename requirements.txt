@@ -1,3 +1,2 @@
-ccxt==4.2.93
 python-telegram-bot==20.7
-aiohttp
+requests
