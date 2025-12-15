@@ -1,15 +1,17 @@
 import os
 
+# Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-EXCHANGE_ID = "bybit"
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
+# OpenRouter
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "").split(",")]
+# Analysis rules
+MIN_PROBABILITY = 75  # minimum % to give a trade
+VOLUME_FILTER = 40_000_000  # $40M
 
-LEVERAGE = int(os.getenv("LEVERAGE", "3"))
-GRID_GAP_PCT = float(os.getenv("GRID_GAP_PCT", "0.003"))
-ORDER_USDT = float(os.getenv("ORDER_USDT", "6"))
-GRID_LOOP_SECONDS = int(os.getenv("GRID_LOOP_SECONDS", "15"))
+# Timeframes
+TIMEFRAMES = ["15m", "1h"]
 
+# MEXC
+MEXC_BASE_URL = "https://contract.mexc.com"
