@@ -1,5 +1,0 @@
-services:
-  - type: worker
-    name: scalper
-    env: python
-    startCommand: "python3 bot.py"
