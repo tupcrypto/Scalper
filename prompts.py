@@ -3,7 +3,7 @@ def analysis_prompt(symbol, price):
 You are a world-class crypto futures trader.
 
 Analyze {symbol} using:
-- 15m and 1h timeframe confluence
+- 15m + 1h timeframe confluence
 - Market structure
 - Momentum
 - Liquidity & fakeouts
@@ -11,7 +11,7 @@ Analyze {symbol} using:
 
 Current price: {price}
 
-Return EXACTLY in this format:
+Respond EXACTLY in this format:
 
 Upside Probability: X%
 Downside Probability: X%
@@ -24,5 +24,5 @@ Entry:
 Stop Loss:
 Take Profit:
 
-Be strict. Reject bad trades.
+Reject bad trades aggressively.
 """
