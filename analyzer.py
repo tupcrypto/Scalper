@@ -2,7 +2,7 @@ import requests
 from config import OPENROUTER_API_KEY
 from prompts import analysis_prompt
 
-def analyze(symbol, price):
+def analyze_sync(symbol, price):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
